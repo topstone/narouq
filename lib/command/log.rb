@@ -24,18 +24,18 @@ module Command
         ・デフォルトでは末尾#{NUM}行のログを表示します。
 
           Examples:
-            narou s logging=true # ログの保存を有効にする
+            narouq s logging=true # ログの保存を有効にする
 
-            narou log
-            narou log -n 100     # 100行分のログを表示
-            narou log -t         # tail -f オプションのようにログを流し続ける
+            narouq log
+            narouq log -n 100     # 100行分のログを表示
+            narouq log -t         # tail -f オプションのようにログを流し続ける
 
-            narou log log/narou.txt # 直接ファイルを指定可能
+            narouq log log/narou.txt # 直接ファイルを指定可能
 
             # concurrency 設定（更新・変換同時実行）が有効時は変換ログが別ファイルに
             # 分かれるので、変換ログを表示したい場合は -c オプションを付ける
             # （指定しなかった場合は通常ログの方を表示）
-            narou log -c         # 変換ログを表示
+            narouq log -c         # 変換ログを表示
 
           Options:
       HELP

@@ -23,9 +23,9 @@ module Command
   ・凍結済みの小説を指定した場合、凍結が解除されます。
 
   Examples:
-    narou freeze --list
-    narou freeze n9669bk
-    narou freeze 0 1 musyoku
+    narouq freeze --list
+    narouq freeze n9669bk
+    narouq freeze 0 1 musyoku
 
   Options:
       EOS
