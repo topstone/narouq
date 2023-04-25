@@ -100,7 +100,7 @@ class NovelConverter
       if DAKUTEN_ERB[i]
         Helper.erb_copy(src, dst, binding)
       else
-        FileUtils.copy(src, dst)
+        FileUtils.install(src, dst)
       end
     end
   end
