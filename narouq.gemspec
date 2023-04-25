@@ -17,8 +17,8 @@ at_exit do
 end
 Encoding.default_external = Encoding::UTF_8
 Gem::Specification.new do |gem|
-  gem.name          = "narou"
-  gem.version       = ::Narou::VERSION
+  gem.name          = "narouq"
+  gem.version       = ::Narou::VERSION + ".q1"
   gem.license       = "MIT"
   gem.authors       = ["whiteleaf7"]
   gem.email         = ["2nd.leaf@gmail.com"]
