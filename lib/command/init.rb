@@ -48,12 +48,12 @@ module Command
 
 #{description}
   Examples:
-    narou init
-    narou init -p /opt/narou/aozora    # AozoraEpub3 のフォルダを直接指定
-    narou init -p :keep                # 設定済みと同じ場所を指定(既に初期化済の場合)
+    narouq init
+    narouq init -p /opt/narou/aozora    # AozoraEpub3 のフォルダを直接指定
+    narouq init -p :keep                # 設定済みと同じ場所を指定(既に初期化済の場合)
 
     # 行の高さの調整
-    narou init --line-height 1.8       # 行の高さを1.8emに設定(1.8文字分相当)
+    narouq init --line-height 1.8       # 行の高さを1.8emに設定(1.8文字分相当)
     # 行の高さなので、行間を1文字分あけたいという場合は 1+1 で 2 を指定する
     # (未設定のまま小説変換すると 1.6 で計算される)
     # 参考情報：Kindle Voyage で文字サイズ４番目の大きさの場合、
@@ -62,7 +62,7 @@ module Command
     # の表示行数になる
 
     # 入力を省略したい場合、-p と -l を両方指定してやる必要あり
-    narou init -p /path/to/aozora -l 1.8
+    narouq init -p /path/to/aozora -l 1.8
 
   Options:
       MSG
