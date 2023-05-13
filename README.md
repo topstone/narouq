@@ -26,10 +26,25 @@ Narou.rb - 小説家になろうのダウンローダ＆縦書き整形＆管理
 主な機能は小説家になろうの小説のダウンロード、更新管理、テキスト整形、AozoraEpub3・kindlegen連携によるEPUB/MOBI出力です。  
 その他にも変換したデータを直接電子書籍端末へ送信する機能は、メールで送信する機能などもあります。
 
-詳細な説明やインストール方法は **[Narou.rb 説明書](https://github.com/whiteleaf7/narou/wiki)** を御覧ください。
+詳細な説明やインストール方法は **[Narou.rb 説明書](https://github.com/whiteleaf7/narou/wiki)** に書いてあるのですが、Narou.rb 説明書 の内容は大変古くなっています。Narou.rb 説明書 を読む際には下記の点に留意して下さい。
+
+* [本家 AozoraEpub3](https://w.atwiki.jp/hmdev/) は2015年を最後に更新されていないため、利用は大変危険です。代わりに改造版 AozoraEpub 3 の最新版をご利用下さい。
+* Java 20 が公開されている今の時代では Java 8 は大変古いです。本家 AozoraEpub 3 が Java 8 を要求しているだけですので、今の時代に Java 8 を使い続けることは有益ではないと考えます。また、[改造版 AozoraEpub 3 は 1.1.1b15Q から Java 8 非対応となっています](https://github.com/kyukyunyorituryo/AozoraEpub3/releases/tag/v1.1.1b15Q)。みんなでどんどん新しい Java 環境を試し、bug が見つかったらどんどん報告する、という方針が効率的な開発に繋がると考えます。
 
 ![WEB UI ScreenCapture](https://raw.github.com/wiki/whiteleaf7/narou/images/webui_cap.png)
 ![Console ScreenCapture](https://raw.github.com/wiki/whiteleaf7/narou/images/narou_cap.gif)
+
+本家との差分 - Difference between "narouq" and original "narou"
+--------------------
+
+* 本家 "narou" とは別の "narouq" という名称にしたので、併存が可能です。同時に、help 出力も narouq に変更しました。
+* Gemfile.lock を除去してあります (.git_ignore にも追記しています)。これは、Git repository に Gemfile.lock を残しておくと fork する開発者の迷惑になる、という考えに基づきます。
+* Ruby 2.6.0 以上を必要とします。
+* last_commit_year を 2023 にしました。これで一部の CI が正常化すると思われます。
+* Java 18 以降に対応させたつもりです。
+* [DMincho.ttf を自動で複製](https://jbbs.shitaraba.net/bbs/read.cgi/computer/44668/1511245701/558)するようにしたつもりです。
+* [Ruby 3.2 の仕様変更に対応](https://jbbs.shitaraba.net/bbs/read.cgi/computer/44668/1511245701/544)させたつもりです。
+* 要求する sinatra の版を 2.0.8.1 以上 4 未満に変更しました。
 
 更新履歴 - ChangeLog
 --------------------
