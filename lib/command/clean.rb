@@ -97,6 +97,9 @@ module Command
       Dir.glob(File.join(dir, Downloader::RAW_DATA_DIR_NAME, "*.txt")).each do |path|
         orphans.push(path) unless items.include?(File.basename(path, ".*"))
       end
+      Dir.glob(File.join(dir, Downloader::RAW_DATA_DIR_NAME, "*.html")).each do |path|
+        orphans.push(path) unless items.include?(File.basename(path, ".*"))
+      end
       Dir.glob(File.join(dir, Downloader::SECTION_SAVE_DIR_NAME, "*.yaml")).each do |path|
         orphans.push(path) unless items.include?(File.basename(path, ".*"))
       end
