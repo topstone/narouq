@@ -100,7 +100,7 @@ class NovelConverter
       if DAKUTEN_ERB[i]
         Helper.erb_copy(src, dst, binding)
       else
-        FileUtils.copy(src, dst)
+        FileUtils.install(src, dst)
       end
     end
   end
@@ -133,7 +133,7 @@ class NovelConverter
     # MEMO: 外部実行からだと -c FILENAME, -c 1 オプションはぬるぽが出て動かない
     cover_filename = get_cover_filename(src_dir)
     if cover_filename
-      cover_option = "-c 0"   # 先頭の挿絵を表紙として利用
+      cover_option = %!--cover "#{cover_filename}"!
     end
 
     dst_option = ""
@@ -165,7 +165,7 @@ class NovelConverter
     aozoraepub3_basename = File.basename(aozoraepub3_path)
     aozoraepub3_dir = File.dirname(aozoraepub3_path)
 
-    java_encoding = "-Dfile.encoding=UTF-8"
+    java_encoding = ""
 
     if Helper.os_cygwin?
       abs_srcpath = Helper.convert_to_windows_path(abs_srcpath)
@@ -196,7 +196,7 @@ class NovelConverter
       return :error
     end
 
-    stdout_capture = res[0]
+    stdout_capture = res[0].force_encoding('Windows-31J').encode('UTF-8')
 
     # Javaの実行環境に由来するであろうエラー
     if stdout_capture =~ /Error occurred during initialization of VM/

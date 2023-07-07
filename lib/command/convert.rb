@@ -55,15 +55,15 @@ module Command
   ・管理小説以外にもテキストファイルを変換出来ます。
     テキストファイルのファイルパスを指定します。
   ※複数指定した場合に-oオプションがあった場合、ファイル名に連番がつきます。
-  ・MOBI化する場合は narou setting device=kindle をして下さい。
+  ・MOBI化する場合は narouq setting device=kindle をして下さい。
   ・device=kobo の場合、.kepub.epub を出力します。
 
   Examples:
-    narou convert n9669bk
-    narou convert http://ncode.syosetu.com/n9669bk/
-    narou convert 異世界迷宮で奴隷ハーレムを
-    narou convert 1 -o "ハーレム -変換済み-.txt"
-    narou convert mynovel.txt --enc sjis
+    narouq convert n9669bk
+    narouq convert http://ncode.syosetu.com/n9669bk/
+    narouq convert 異世界迷宮で奴隷ハーレムを
+    narouq convert 1 -o "ハーレム -変換済み-.txt"
+    narouq convert mynovel.txt --enc sjis
 
   Options:
       EOS

@@ -20,23 +20,23 @@ module Command
 
   ・<target>で指定した小説の電子書籍データを<device>で指定した端末に送信します
   ・<device>には現在 #{Device::DEVICES.keys.join(", ")} が指定出来ます
-  ・narou setting device=<device>としておけば、<device>の入力を省略できます
+  ・narouq setting device=<device>としておけば、<device>の入力を省略できます
     また、convertコマンドで変換時に(端末がPCに接続されていれば)自動でデータを送信するようになります
   ・送信時はファイルのタイムスタンプを端末のものと比べて新しければ送信します
   ・<target>を省略した場合、管理している小説全てが送信対象になります
   ・<target>にhotentryを指定した場合、最新のhotnetryを送信します
 
   Examples:
-    narou send kindle 6
-    narou send kobo 6
+    narouq send kindle 6
+    narouq send kobo 6
 
     # <device>の省略
-    narou setting device=kindle
-    narou send 6
+    narouq setting device=kindle
+    narouq send 6
 
-    narou send      # 端末のファイルより新しいファイルがあれば送信
-    narou send --without-freeze   # 凍結済は対象外に
-    narou s send.without-freeze=true   # 常に凍結済みを対象外に設定
+    narouq send      # 端末のファイルより新しいファイルがあれば送信
+    narouq send --without-freeze   # 凍結済は対象外に
+    narouq s send.without-freeze=true   # 常に凍結済みを対象外に設定
 
   Options:
       EOS
