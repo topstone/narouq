@@ -44,7 +44,9 @@ Narou.rb - 小説家になろうのダウンローダ＆縦書き整形＆管理
 * Java 18 以降に対応させたつもりです。
 * [DMincho.ttf を自動で複製](https://jbbs.shitaraba.net/bbs/read.cgi/computer/44668/1511245701/558)するようにしたつもりです。
 * [Ruby 3.2 の仕様変更に対応](https://jbbs.shitaraba.net/bbs/read.cgi/computer/44668/1511245701/544)させたつもりです。
+* 2023年11月にカクヨムの仕様が変更され取り込めなくなっていたので、[掲示板に挙げられている変更](https://jbbs.shitaraba.net/bbs/read.cgi/computer/44668/1511245701/611)をとりあえず採用させていただきました。
 * 要求する sinatra の版を 2.0.8.1 以上 4 未満に変更しました。
+* 以上の変更は正しく動作するかどうか充分に検証しておりません。自己責任でご利用下さい。
 
 更新履歴 - ChangeLog
 --------------------
