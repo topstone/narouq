@@ -17,8 +17,8 @@ at_exit do
 end
 Encoding.default_external = Encoding::UTF_8
 Gem::Specification.new do |gem|
-  gem.name          = "narou"
-  gem.version       = ::Narou::VERSION
+  gem.name          = "narouq"
+  gem.version       = ::Narou::VERSION + ".q2"
   gem.license       = "MIT"
   gem.authors       = ["whiteleaf7"]
   gem.email         = ["2nd.leaf@gmail.com"]
@@ -41,7 +41,7 @@ Gem::Specification.new do |gem|
   EOS
   gem.post_install_message = install_message.gsub("\t", "  ")
 
-  gem.required_ruby_version = ">=2.3.0"
+  gem.required_ruby_version = ">=2.6.0"
 
   gem.files = `git ls-files`.split("\n").reject { |fn| fn =~ %r!^spec/|^"spec! } << Narou.create_git_commit_version
   gem.executables = gem.files.grep(%r!^bin/!).map { |f| File.basename(f) }
@@ -51,7 +51,7 @@ Gem::Specification.new do |gem|
   gem.add_runtime_dependency 'mail', '~> 2.6.0', '>= 2.6.6'
   gem.add_runtime_dependency 'pony', '~> 1', '>= 1.11'
   gem.add_runtime_dependency 'diff-lcs', '~> 1.2', '>= 1.2.5'
-  gem.add_runtime_dependency 'sinatra', '~> 2.0', '>= 2.0.8.1'
+  gem.add_runtime_dependency 'sinatra', '>= 2.0.8.1', '< 4'
   gem.add_runtime_dependency 'sinatra-contrib', '~> 2.0', '>= 2.0.8.1'
   gem.add_runtime_dependency 'tilt', '~> 2.0', '>= 2.0.10'
   gem.add_runtime_dependency 'sassc', '~> 2.4'

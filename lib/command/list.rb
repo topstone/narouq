@@ -33,7 +33,7 @@ module Command
   ・表示されるIDは各コマンドで指定することで小説名等を入力する手間を省けます
   ・個数を与えることで、最大表示数を制限できます(デフォルトは全て表示)
   ・narouq listのデフォルト動作を narouq s default_arg.list= で設定すると便利です
-  ・パイプで他のnarouコマンドに繋ぐとID入力の代わりにできます
+  ・パイプで他の narouq コマンドに繋ぐとID入力の代わりにできます
 
   Examples:
     narouq list             # IDの小さい順に全て表示
