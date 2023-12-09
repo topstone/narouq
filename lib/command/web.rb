@@ -156,7 +156,7 @@ module Command
 他のアプリケーションが使っているポートだった場合、ポートを変更して下さい。
 
 ポートの変更方法
-  $ narou s server-port=5678
+  $ narouq s server-port=5678
       EOS
       exit Narou::EXIT_ERROR_CODE
     end

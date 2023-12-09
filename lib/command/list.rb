@@ -55,9 +55,9 @@ module Command
     narouq l -sg "-なろう"
 
     # ハーメルンを含む小説にhamelnタグを付ける
-    narouq l -sg ハーメルン | narou t -a hameln
+    narouq l -sg ハーメルン | narouq t -a hameln
     # 短編を全て凍結する
-    narouq l -f ss | narou freeze --on
+    narouq l -f ss | narouq freeze --on
 
     # リストをそのまま保存したい時(echoオプション)
     narouq l -e > list.txt

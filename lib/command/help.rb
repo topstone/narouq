@@ -56,10 +56,10 @@ module Command
       stream_io.puts(<<~HELP.termcolor)
         #{HEADER}
 
-         <bold><green>Usage: narou init</green></bold>
+         <bold><green>Usage: narouq init</green></bold>
 
            まだこのフォルダは初期化されていません。
-           <bold><yellow>narou init</yellow></bold> コマンドを実行して初期化を行いましょう。
+           <bold><yellow>narouq init</yellow></bold> コマンドを実行して初期化を行いましょう。
       HELP
     end
   end

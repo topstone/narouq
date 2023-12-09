@@ -70,7 +70,7 @@ module Command
                             |   other  | なろうAPIが使えない小説のみ対象
         EOS
         if option && !["narou", "other"].include?(option)
-          error "--gl で指定可能なオプションではありません。詳細は narou u -h を参照"
+          error "--gl で指定可能なオプションではありません。詳細は narouq u -h を参照"
           exit Narou::EXIT_ERROR_CODE
         end
         update_general_lastup(option)

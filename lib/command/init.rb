@@ -78,7 +78,7 @@ module Command
         init_aozoraepub3
         puts "初期化が完了しました！"
         puts "現在のフォルダ下で各種コマンドが使用出来るようになりました。"
-        puts "まずは narou help で簡単な説明を御覧ください。"
+        puts "まずは narouq help で簡単な説明を御覧ください。"
       end
     end
 
@@ -98,7 +98,7 @@ module Command
       end
       aozora_path = path || ask_aozoraepub3_path
       unless aozora_path
-        puts "設定をスキップしました。あとで " + "<bold><yellow>narou init</yellow></bold>".termcolor + " で再度設定出来ます"
+        puts "設定をスキップしました。あとで " + "<bold><yellow>narouq init</yellow></bold>".termcolor + " で再度設定出来ます"
         return
       end
       line_height = @options["line_height"] || ask_line_height

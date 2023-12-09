@@ -26,7 +26,7 @@ module Command
       @opt.separator <<-EOS
 
   ・各コマンドの設定の変更が出来ます。
-  ・Global な設定はユーザープロファイルに保存され、すべての narou コマンドで使われます
+  ・Global な設定はユーザープロファイルに保存され、すべての narouq コマンドで使われます
   ・下の一覧は一部です。すべてを確認するには -a オプションを付けて確認して下さい
   ・default. で始まる設定は、setting.ini で未設定時の項目の挙動を指定することが出来ます
   ・force. で始まる設定は、setting.ini や default.* 等の指定を全て無視して項目の挙動を強制出来ます
@@ -42,7 +42,7 @@ module Command
       @opt.separator <<-EOS
 
     これ以外にも設定出来る項目があります。確認する場合は
-    narous setting -a コマンドを参照して下さい
+    narouq setting -a コマンドを参照して下さい
 
   Examples:
     narouq setting --list                 # 現在の設置値一覧を表示
@@ -328,7 +328,7 @@ module Command
 
     SETTING_TAB_INFO = {
       webui: "WEB UI 専用の設定です",
-      global: "Global な設定はユーザープロファイルに保存され、すべての narou コマンドで使われます",
+      global: "Global な設定はユーザープロファイルに保存され、すべての narouq コマンドで使われます",
       default: "default.* 系の設定は個別の変換設定で未設定の項目の挙動を指定することが出来ます",
       force: "force.* 系の設定は個別設定、default.* 等の設定を無視して反映されるようになります",
       command: "default_args.* 系の設定は、各種コマンドのオプションを省略した場合に使用されるオプションを指定出来ます",
@@ -557,7 +557,7 @@ module Command
           type: :directory, help: "AozoraEpub3のあるフォルダを指定", invisible: true
         },
         "line-height" => {
-          type: :float, help: "行間サイズ(narou init から指定しないと反映されません)", invisible: true
+          type: :float, help: "行間サイズ(narouq init から指定しないと反映されません)", invisible: true
         },
         "difftool" => {
           type: :string, help: "diffで使うツールのパスを指定する",

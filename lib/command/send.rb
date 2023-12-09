@@ -68,7 +68,7 @@ module Command
       unless device
         stream_io.error <<~ERR
           デバイス名が指定されていないか、間違っています。
-          narou setting device=デバイス名 で指定出来ます。
+          narouq setting device=デバイス名 で指定出来ます。
           指定出来るデバイス名：#{Device::DEVICES.keys.join(", ")}
         ERR
         exit Narou::EXIT_ERROR_CODE
