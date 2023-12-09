@@ -25,7 +25,7 @@ module Command
       stream_io.puts(<<~HELP.termcolor)
         #{HEADER}
 
-         <bold><green>Usage: narou &lt;command&gt; [arguments...] [options...]
+         <bold><green>Usage: narouq &lt;command&gt; [arguments...] [options...]
                       [--no-color] [--multiple] [--time] [--backtrace]</green></bold>
 
          コマンドの簡単な説明:
@@ -40,9 +40,9 @@ module Command
       end
       stream_io.puts(<<-HELP.termcolor)
 
-  各コマンドの詳細は narou &lt;command&gt; -h を参照してください。
+  各コマンドの詳細は narouq &lt;command&gt; -h を参照してください。
   各コマンドは先頭の一文字か二文字でも指定できます。
-  (e.g. `narou <bold><yellow>d</yellow></bold> n4259s', `narou <bold><yellow>fr</yellow></bold> musyoku')
+  (e.g. `narouq <bold><yellow>d</yellow></bold> n4259s', `narouq <bold><yellow>fr</yellow></bold> musyoku')
 
   <underline><bold>Global Options:</bold></underline>
     --no-color   カラー表示を無効にする
@@ -56,10 +56,10 @@ module Command
       stream_io.puts(<<~HELP.termcolor)
         #{HEADER}
 
-         <bold><green>Usage: narou init</green></bold>
+         <bold><green>Usage: narouq init</green></bold>
 
            まだこのフォルダは初期化されていません。
-           <bold><yellow>narou init</yellow></bold> コマンドを実行して初期化を行いましょう。
+           <bold><yellow>narouq init</yellow></bold> コマンドを実行して初期化を行いましょう。
       HELP
     end
   end

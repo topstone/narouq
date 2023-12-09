@@ -41,18 +41,18 @@ module Command
   ・全て更新する場合、convert.no-openが設定されていなくても保存フォルダは開きません。
 
   Examples:
-    narou update               # 全て更新
-    narou u                    # 短縮コマンド
-    narou update 0 1 2 4
-    narou update n9669bk 異世界迷宮で奴隷ハーレムを
-    narou update http://ncode.syosetu.com/n9669bk/
+    narouq update               # 全て更新
+    narouq u                    # 短縮コマンド
+    narouq update 0 1 2 4
+    narouq update n9669bk 異世界迷宮で奴隷ハーレムを
+    narouq update http://ncode.syosetu.com/n9669bk/
 
     # foo タグが付いた小説と bar タグが付いた小説を更新(タグのOR指定)
-    narou u foo bar
+    narouq u foo bar
 
     # foo タグ及び bar タグが両方付いた小説のみ更新(タグのAND指定)
-    narou tag foo bar | narou u
-    narou l -t "foo bar" | narou u   # こっちでも同じ(覚えやすい方を使う)
+    narouq tag foo bar | narouq u
+    narouq l -t "foo bar" | narouq u   # こっちでも同じ(覚えやすい方を使う)
 
   Options:
       EOS
@@ -70,7 +70,7 @@ module Command
                             |   other  | なろうAPIが使えない小説のみ対象
         EOS
         if option && !["narou", "other"].include?(option)
-          error "--gl で指定可能なオプションではありません。詳細は narou u -h を参照"
+          error "--gl で指定可能なオプションではありません。詳細は narouq u -h を参照"
           exit Narou::EXIT_ERROR_CODE
         end
         update_general_lastup(option)

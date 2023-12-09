@@ -48,12 +48,12 @@ module Command
 
 #{description}
   Examples:
-    narou init
-    narou init -p /opt/narou/aozora    # AozoraEpub3 のフォルダを直接指定
-    narou init -p :keep                # 設定済みと同じ場所を指定(既に初期化済の場合)
+    narouq init
+    narouq init -p /opt/narou/aozora    # AozoraEpub3 のフォルダを直接指定
+    narouq init -p :keep                # 設定済みと同じ場所を指定(既に初期化済の場合)
 
     # 行の高さの調整
-    narou init --line-height 1.8       # 行の高さを1.8emに設定(1.8文字分相当)
+    narouq init --line-height 1.8       # 行の高さを1.8emに設定(1.8文字分相当)
     # 行の高さなので、行間を1文字分あけたいという場合は 1+1 で 2 を指定する
     # (未設定のまま小説変換すると 1.6 で計算される)
     # 参考情報：Kindle Voyage で文字サイズ４番目の大きさの場合、
@@ -62,7 +62,7 @@ module Command
     # の表示行数になる
 
     # 入力を省略したい場合、-p と -l を両方指定してやる必要あり
-    narou init -p /path/to/aozora -l 1.8
+    narouq init -p /path/to/aozora -l 1.8
 
   Options:
       MSG
@@ -78,7 +78,7 @@ module Command
         init_aozoraepub3
         puts "初期化が完了しました！"
         puts "現在のフォルダ下で各種コマンドが使用出来るようになりました。"
-        puts "まずは narou help で簡単な説明を御覧ください。"
+        puts "まずは narouq help で簡単な説明を御覧ください。"
       end
     end
 
@@ -98,7 +98,7 @@ module Command
       end
       aozora_path = path || ask_aozoraepub3_path
       unless aozora_path
-        puts "設定をスキップしました。あとで " + "<bold><yellow>narou init</yellow></bold>".termcolor + " で再度設定出来ます"
+        puts "設定をスキップしました。あとで " + "<bold><yellow>narouq init</yellow></bold>".termcolor + " で再度設定出来ます"
         return
       end
       line_height = @options["line_height"] || ask_line_height

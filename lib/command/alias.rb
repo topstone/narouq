@@ -24,11 +24,11 @@ module Command
   ・<target>は他のコマンドで指定出来るものがそのまま使えますが、すでにダウンロード済みである必要があります。
 
   Examples:
-    narou alias --list
-    narou alias musyoku=n9669bk
-    narou alias harem=1
-    narou convert harem    # 他のコマンドで別名が使えるようになる
-    narou alias harem=     # 右辺に何も書かないとその別名を解除できる
+    narouq alias --list
+    narouq alias musyoku=n9669bk
+    narouq alias harem=1
+    narouq convert harem    # 他のコマンドで別名が使えるようになる
+    narouq alias harem=     # 右辺に何も書かないとその別名を解除できる
 
   Options:
       EOS

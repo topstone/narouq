@@ -1115,13 +1115,13 @@ class Downloader
       (download.interval が最重要設定。１話ごとの間隔が短すぎると規制されやすい)
 
       # 1話ごとに入るウェイトを変更する(単位：秒)
-      narou s download.interval=1.0
+      narouq s download.interval=1.0
 
       # 10話ごとに通常より長いウェイトを入れる
-      narou s download.wait-steps=10
+      narouq s download.wait-steps=10
 
       # Update時の作品間の待機時間を変更する(単位：秒)
-      narou s update.interval=3.0
+      narouq s update.interval=3.0
     HINT
   end
 

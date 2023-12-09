@@ -69,7 +69,7 @@ class Narou::AppServer < Sinatra::Base
   # サーバのアドレスを生成
   #
   # portは初回起動時にランダムで設定する。次回からは同じ設定を引き継ぐ。
-  # bindは自分で設定する場合は narou s server-bind=address で行う。
+  # bindは自分で設定する場合は narouq s server-bind=address で行う。
   # bindは設定しなかった場合は起動したPCのプライベートIPアドレスが設定される。
   # この場合はLAN内からアクセス出来る。
   # bindがlocalhostの場合は実際には127.0.0.1で処理される。(起動したPCでしか

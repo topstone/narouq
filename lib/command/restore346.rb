@@ -21,7 +21,7 @@ module Command
   ・このコマンドを実行しなくても更新は出来ますが、改稿がある話のDLが走ってしまいます
 
   Examples:
-    narou restore346
+    narouq restore346
 
       HELP
 

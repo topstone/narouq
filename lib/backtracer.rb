@@ -27,7 +27,7 @@ module Narou
         warn traces.lines[0..2]
         warn ""
         warn "  エラーが発生したため終了しました。"
-        warn "  詳細なエラーログは narou trace で表示出来ます。もしくは --backtrace オプションを付けて再度実行して下さい。"
+        warn "  詳細なエラーログは narouq trace で表示出来ます。もしくは --backtrace オプションを付けて再度実行して下さい。"
       end
       save_log(traces)
       exit Narou::EXIT_ERROR_CODE

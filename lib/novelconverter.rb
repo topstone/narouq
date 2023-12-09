@@ -159,7 +159,7 @@ class NovelConverter
     aozoraepub3_path = Narou.aozoraepub3_path
     unless aozoraepub3_path
       error "AozoraEpub3が見つからなかったのでEPUBが出力出来ませんでした。" +
-            "narou initでAozoraEpub3の設定を行なって下さい"
+            "narouq initでAozoraEpub3の設定を行なって下さい"
       return nil
     end
     aozoraepub3_basename = File.basename(aozoraepub3_path)

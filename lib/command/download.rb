@@ -30,12 +30,12 @@ module Command
   ・NコードもURLも指定しなかった場合、対話モード移行します。
 
   Examples:
-    narou download n9669bk
-    narou download http://ncode.syosetu.com/n9669bk/
-    narou download n9669bk http://ncode.syosetu.com/n4259s/
-    narou download 0 1 -f
-    narou download n9669bk -n
-    narou download n6864bt --remove
+    narouq download n9669bk
+    narouq download http://ncode.syosetu.com/n9669bk/
+    narouq download n9669bk http://ncode.syosetu.com/n4259s/
+    narouq download 0 1 -f
+    narouq download n9669bk -n
+    narouq download n6864bt --remove
 
   Options:
       EOS
