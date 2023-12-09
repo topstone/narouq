@@ -14,29 +14,34 @@ version: 1.0
 
 # ------------------------------------------------------------
 # 書籍情報取得設定
-title: &title |-
-  <h1 id="workTitle"><a href=".+?">(?<title>.+?)</a></h1>
-author: |-
-  (?:<span class="activityName" itemprop="author">(?<author>.+?)</span>)|(?:<span class="screenName.*?">(?<author>.+?)</span>)
-story: &story |-
-  <p id="introduction" class="ui-truncateTextButton js-work-introduction">(?<story>.+?)(?:[\n ]*?</span>|[\n ]*?</p>)
+title: &title >-
+  <h1[^>]*><span[^>]*><a[^>]*>(?<title>.+?)</a></span></h1>
+author: >-
+  </h1><div><div[^>]*><div[^>]*><a href="/users/[^>]+>(?<author>.+?)</a></div></div></div>
+story: &story >-
+  (?x)
+    <div.class="CollapseTextWithKakuyomuLinks_collapseText[^>]*>
+      (?<story>.+?)
+      #(?:<span.class="CollapseTextWithKakuyomuLinks_expandButtonLabel.+?>)?
+    </div>
+#  "introduction":"(?<story>.+?)",
 
 # ------------------------------------------------------------
 # 目次取得設定
 toc_url: \\k<top_url>/works/\\k<ncode>
-subtitles: |-2
-            (?:<li class="widget-toc-chapter widget-toc-level1.*?">
-              <span>(?<chapter>.+?)</span>
-            </li>
-            )?(?:<li class="widget-toc-chapter widget-toc-level2.*?">
-              <span>(?<subchapter>.+?)</span>
-            </li>
-            )?<li class="widget-toc-episode">
-              <a href="(?<href>/works/\d+/episodes/(?<index>\d+))".*?>
-                <span class="widget-toc-episode-titleLabel.*?">(?<subtitle>.+?)</span>
-                <time class="widget-toc-episode-datePublished" datetime="(?<subupdate>.+?)">.+?</time>
-              </a>
-            </li>
+subtitles: (?x)
+  (?:"level":1,"title":"(?<chapter>(?:[^"]|\\")+)"},)?
+  (?:(?:"TableOfContentsChapter:\d+":{[^\]]+\]},)?
+    "Chapter:\d+":{"__typename":"Chapter","id":"\d+",
+      "level":2,"title":"(?<subchapter>(?:[^"]|\\")+)"
+  },)?
+  "Episode:\d+":{
+    "__typename":"Episode",
+    "id":"(?<index>\d+)",
+    "title":"(?<subtitle>(?:[^"]|\\")+)",
+    "publishedAt":"(?<subupdate>[^"]+)"
+  }
+href: /works/\\k<ncode>/episodes/\\k<index>
 
 # ------------------------------------------------------------
 # 本文取得設定
@@ -53,29 +58,28 @@ novel_info_url: \\k<toc_url>
 t: *title
 
 # novel_type 小説種別
-nt: '<dt><span>執筆状況</span></dt>\n *?<dd>(?<novel_type>.+?)</dd>'
+nt: '"serialStatus":"(?<novel_type>\w+)","publicEpisodeCount":(?<general_all_no>\d+),"totalCharacterCount":(?<length>\d+),"isCruel"'
 novel_type_string:
-  連載中: 1
-  完結済: 3
+  RUNNING: 1
+  COMPLETED: 3
 
 # general_all_no 掲載話数
-ga: '<dt><span>エピソード</span></dt>\n *?<dd>(?<general_all_no>\d+)話</dd>'
+ga: null #'"publicEpisodeCount":(?<general_all_no>\d+),"totalCharacterCount":\d+,"isCruel":'
 
 # story あらすじ
 s: *story
 
 # general_firstup 初回掲載日
-gf: '<dt><span>公開日</span></dt>\n *?<dd><time itemprop="datePublished" datetime="(?<general_firstup>.+?)">.+?</time>'
+gf: '"promotionalImageUrl":[^{}]*?,"publishedAt":"(?<general_firstup>[^"]+)",[^{}]*?"adminBookInformationUrl":'
 
 # novelupdated_at 小説の更新時刻。最終掲載日で代用
-nu: '<dt><span>最終更新日</span></dt>\n *?<dd><time itemprop="dateModified" datetime="(?<novelupdated_at>.+?)">.+?</time>'
+nu: '"editedAt":"(?<novelupdated_at>[^"]+)"'
 
 # general_lastup 最新話掲載日
-gl: null
+gl: '"promotionalImageUrl":[^{}]*?,"lastEpisodePublishedAt":"(?<general_lastup>[^"]+)",[^{}]*?"adminBookInformationUrl":'
 
 # writer 作者名
-w: |-
-  (?:<span class="activityName" itemprop="author">(?<writer>.+?)</span>)|(?:<span class="screenName.*?">(?<writer>.+?)</span>)
+w: </h1><div><div[^>]*><div[^>]*><a href="/users/[^>]+>(?<writer>.+?)</a></div></div></div>
 
 # length 文字数
-l: '<dt><span>総文字数</span></dt>\n *?<dd>(?<length>.+?)文字</dd>'
+l: null #'"totalCharacterCount":(?<length>\d+),"isCruel":'
