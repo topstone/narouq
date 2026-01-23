@@ -45,6 +45,7 @@ class ConverterBase
     @subtitles = nil
     @data_type = "text"
     @current_index = 0
+    @device = Narou.get_device
     reset_member_values
   end
 
@@ -65,7 +66,6 @@ class ConverterBase
     @num_and_comma_list = {}
     @force_indent_special_chapter_list = {}
     @in_author_comment_block = nil
-    @device = Narou.get_device
   end
 
   def outputs(data = "", force = false)
@@ -939,8 +939,8 @@ class ConverterBase
       "#{m1[0...-1]}#{openclose_symbols[0]}#{m2}#{openclose_symbols[1]}"
     when is_sesame?(m1, m2, last_char)
       sesame(m1)
-    when m1.include?("｜")
-      "#{m1.sub(/｜([^｜]*)$/, "［＃ルビ用縦線］\\1")}《#{ruby_youon_to_big(m2)}》"
+    when m1 =~ /^(.*)｜([^｜≪≫（）《》]+)$/
+      "#{$1}［＃ルビ用縦線］#{$2}《#{ruby_youon_to_big(m2)}》"
     when object_of_ruby?(last_char)
       if openclose_symbols[0] == "≪" && m2 !~ /^#{AUTO_RUBY_CHARACTERS}$/
         # 《 》タイプのルビであっても、｜が存在しない場合の自動ルビ化対象はひらがな等だけである
@@ -1191,18 +1191,64 @@ class ConverterBase
 
   WORD_SEPARATOR = "［＃zws］"   # zws = zero width space
 
+  # 端末名を小文字で返す（@device を最優先。無ければ Narou.get_device）
+  def current_device_name_for_gate
+    dev =
+      if instance_variable_defined?(:@device) && (d = instance_variable_get(:@device))
+        d
+      else
+        begin
+          Narou.get_device
+        rescue
+          nil
+        end
+      end
+    name = dev.respond_to?(:name) ? dev.name : nil
+    name.to_s.downcase.presence
+  end
+
   #
   # Kindle端末で単語選択がしやすいように０幅スペースを挿入する
   #
-  def insert_separator_for_selection(str)
-    return str unless @device && @device.kindle?
-    return str if @text_type != "body" && @text_type != "textfile"
-    if @setting.enable_insert_word_separator
-      insert_word_separator(str)
-    elsif @setting.enable_insert_char_separator
-      insert_char_separator(str)
-    else
-      str
+  def insert_separator_for_selection(str = nil)
+    # body / textfile / 以外は素通し
+    return str unless @text_type == "body" || @text_type == "textfile"
+    # nilガード
+    return "" if str.nil?
+
+    # Device gating: Kindle 以外では ZWS を入れない
+    # 端末が明示されている場合のみゲートする
+    dev_name = current_device_name_for_gate
+    if dev_name
+      # Kindle 以外なら挿入せず素通し
+      return str unless dev_name == "kindle"
+      # Kindle ならこの先の本体ロジックへ（ZWS 挿入）
+    end
+    # 端末が不明（nil）の場合は従来どおり ZWS を挿入
+
+    # 設定値を確認（true/false を区別できるようにそのまま保持）
+    word_on = @setting && @setting.respond_to?(:enable_insert_word_separator) ?
+                @setting.enable_insert_word_separator : nil
+    char_on = @setting && @setting.respond_to?(:enable_insert_char_separator) ?
+                @setting.enable_insert_char_separator : nil
+
+    # 優先順位:
+    #  1) 小説設定で明示 ON → 端末に関係なく従う
+    #  2) 未設定（nil/false の両方を未指定扱いにしたい場合は nil 判定に変えてもOK）
+    #  3) それ以外 → 何もしない
+    mode =
+      if word_on
+        :word
+      elsif char_on
+        :char
+      else
+        :none
+      end
+
+    case mode
+    when :word then insert_word_separator(str)
+    when :char then insert_char_separator(str)
+    else str
     end
   end
 
@@ -1332,6 +1378,17 @@ class ConverterBase
     return data
   end
 
+  # 複数のテキストをまとめて変換する
+  # pairs: { key1 => [text, text_type], key2 => [text, text_type], ... }
+  # 戻り値: { key1 => converted_text1, key2 => converted_text2, ... }
+  def convert_multi(pairs)
+    results = {}
+    pairs.each do |key, (text, text_type)|
+      results[key] = convert(text, text_type)
+    end
+    results
+  end
+
   #
   # 変換処理本体
   #
@@ -1368,7 +1425,7 @@ class ConverterBase
       @write_fp.write(data)
     else
       @read_fp.each_with_index do |line, i|
-        progressbar.output(i) if progressbar
+        progressbar.output(i) if progressbar && (i % 50).zero?  # 50行ごとに制限
         @request_skip_output_line = false
         zenkaku_rstrip(line)
         if @request_insert_blank_next_line

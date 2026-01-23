@@ -26,7 +26,7 @@ module Command
       @opt.separator <<-EOS
 
   ・各コマンドの設定の変更が出来ます。
-  ・Global な設定はユーザープロファイルに保存され、すべての narouq コマンドで使われます
+  ・Global な設定はユーザープロファイルに保存され、すべての narou コマンドで使われます
   ・下の一覧は一部です。すべてを確認するには -a オプションを付けて確認して下さい
   ・default. で始まる設定は、setting.ini で未設定時の項目の挙動を指定することが出来ます
   ・force. で始まる設定は、setting.ini や default.* 等の指定を全て無視して項目の挙動を強制出来ます
@@ -42,17 +42,17 @@ module Command
       @opt.separator <<-EOS
 
     これ以外にも設定出来る項目があります。確認する場合は
-    narouq setting -a コマンドを参照して下さい
+    narou setting -a コマンドを参照して下さい
 
   Examples:
-    narouq setting --list                 # 現在の設置値一覧を表示
-    narouq setting convert.no-open=true   # 値を設定する
-    narouq setting convert.no-epub=       # 右辺に何も書かないとその設定を削除出来る
-    narouq setting device                 # 変数名だけ書くと現在の値を確認出来る
+    narou setting --list                 # 現在の設置値一覧を表示
+    narou setting convert.no-open=true   # 値を設定する
+    narou setting convert.no-epub=       # 右辺に何も書かないとその設定を削除出来る
+    narou setting device                 # 変数名だけ書くと現在の値を確認出来る
 
-    narouq s convert.copy-to=C:/dropbox/mobi
+    narou s convert.copy-to=C:/dropbox/mobi
     # パスにスペースが含まれる場合はダブルクウォーテーションで囲う
-    narouq s convert.copy-to="C:\\Documents and Settings\\user\\epub"
+    narou s convert.copy-to="C:\\Documents and Settings\\user\\epub"
 
   Options:
       EOS
@@ -328,7 +328,7 @@ module Command
 
     SETTING_TAB_INFO = {
       webui: "WEB UI 専用の設定です",
-      global: "Global な設定はユーザープロファイルに保存され、すべての narouq コマンドで使われます",
+      global: "Global な設定はユーザープロファイルに保存され、すべての narou コマンドで使われます",
       default: "default.* 系の設定は個別の変換設定で未設定の項目の挙動を指定することが出来ます",
       force: "force.* 系の設定は個別設定、default.* 等の設定を無視して反映されるようになります",
       command: "default_args.* 系の設定は、各種コマンドのオプションを省略した場合に使用されるオプションを指定出来ます",
@@ -406,9 +406,26 @@ module Command
           select_summaries: Narou::UPDATE_SORT_KEYS.values,
           tab: :general
         },
+        "update.auto-schedule.enable" => {
+          type: :boolean,
+          help: "自動アップデート機能を有効にする",
+          tab: :general
+        },
+        "update.auto-schedule" => {
+          type: :string,
+          help: "自動アップデートする時間を指定する。カンマ区切りで複数指定可能。\n" \
+                "      書式：HHMM (例: 0800,1200,1800 = 8時、12時、18時)",
+          tab: :general
+        },
         "convert.copy-to" => {
           type: :directory,
           help: "変換したらこのフォルダにコピーする\n" \
+                "      ※注意：存在しないフォルダだとエラーになる",
+          tab: :general
+        },
+        "convert.copy-zip-to" => {
+          type: :directory,
+          help: "生成したZIPファイルをこのフォルダにコピーする\n" \
                 "      ※注意：存在しないフォルダだとエラーになる",
           tab: :general
         },
@@ -436,6 +453,11 @@ module Command
         },
         "convert.no-zip" => {
           type: :boolean, help: "i文庫用のzipファイル作成を無効にする", invisible: true
+        },
+        "convert.make-zip" => {
+          type: :boolean,
+          help: "ZIPファイルの作成を有効にする（対応端末: i文庫）",
+          tab: :general
         },
         "convert.no-open" => {
           type: :boolean, help: "変換時に保存フォルダを開かないようにする",
@@ -508,11 +530,29 @@ module Command
           help: "ネタバレ防止機能。ダウンロード時の各話タイトルを伏せ字で表示する",
           tab: :detail
         },
+        "auto-add-tags" => {
+          type: :boolean,
+          help: "サイトから取得したタグを自動的に小説データに追加する",
+          tab: :general
+        },
         "normalize-filename" => {
           type: :boolean,
           help: "ファイル名の文字列をNFCで正規化する。※既存データとの互換性が無くなる可能性があるので、" \
                 "バックアップを取った上で機能を理解の上有効にして下さい",
           tab: :detail,
+        },
+        "convert.add-dc-subject-to-epub" => {
+          type: :boolean,
+          help: "EPUB変換時にstandard.opfファイルにdc:subject要素を追加する。" \
+                "小説のタグ情報がdc:subjectとして埋め込まれます",
+          tab: :general
+        },
+        "convert.dc-subject-exclude-tags" => {
+          type: :string,
+          help: "dc:subjectから除外するタグをカンマ区切りで指定する。" \
+                "初期値は「404,end」（初回実行時に自動設定される）。" \
+                "すべてのタグを埋め込みたい場合は空文字列を設定",
+          tab: :general
         },
         "folder-length-limit" => {
           type: :integer,
@@ -534,6 +574,10 @@ module Command
                 "エラーは出ないが読めなくなる）",
           tab: :detail
         },
+        "user-agent" => {
+          type: :string, help:  "User-Agent 設定\n未指定時 Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+          tab: :detail
+        },
         "webui.theme" => {
           type: :select, help: "WEB UI 用テーマ選択",
           invisible: true,
@@ -551,13 +595,23 @@ module Command
           ),
           tab: :webui
         },
+        "webui.performance-mode" => {
+          type: :select, help: "パフォーマンスモードを設定。autoの場合は小説数2000件以上で自動的に有効になります",
+          select_keys: %w(auto on off),
+          select_summaries: %w(
+            自動判定
+            常に有効
+            常に無効
+          ),
+          tab: :webui
+        },
       },
       global: {
         "aozoraepub3dir" => {
           type: :directory, help: "AozoraEpub3のあるフォルダを指定", invisible: true
         },
         "line-height" => {
-          type: :float, help: "行間サイズ(narouq init から指定しないと反映されません)", invisible: true
+          type: :float, help: "行間サイズ(narou init から指定しないと反映されません)", invisible: true
         },
         "difftool" => {
           type: :string, help: "diffで使うツールのパスを指定する",
@@ -588,25 +642,18 @@ module Command
           invisible: true,
           tab: :global
         },
-        "server-digest-auth.enable" => {
-          type: :boolean, help: "WEBサーバでDigest認証を使用するかどうか",
+        "server-basic-auth.enable" => {
+          type: :boolean, help: "WEBサーバでBasic認証を使用するかどうか",
           invisible: true,
           tab: :global
         },
-        "server-digest-auth.user" => {
-          type: :string, help: "WEBサーバでDigest認証をするユーザ名",
+        "server-basic-auth.user" => {
+          type: :string, help: "WEBサーバでBasic認証をするユーザ名",
           invisible: true,
           tab: :global
         },
-        "server-digest-auth.password" => {
-          type: :string, help: "WEBサーバのDigest認証のパスワード。hashed-passwordも設定した場合はそちらが優先される",
-          invisible: true,
-          tab: :global
-        },
-        "server-digest-auth.hashed-password" => {
-          type: :string,
-          help: "WEBサーバのDigest認証のパスワードを、Realmを\"narou.rb\"としてハッシュにしたもの。下記のようなコマンドで生成できる\n" \
-                "$ ruby -r 'digest/md5' -e 'puts Digest::MD5.hexdigest \"\#{$*[0]}:narou.rb:\#{$*[1]}\"' user password",
+        "server-basic-auth.password" => {
+          type: :string, help: "WEBサーバのBasic認証のパスワード",
           invisible: true,
           tab: :global
         },

@@ -7,6 +7,7 @@
 require_relative "../narou"
 require_relative "../downloader"
 require_relative "../input"
+require_relative "../tty_helper"
 
 module Command
   class Download < CommandBase
@@ -30,12 +31,12 @@ module Command
   ・NコードもURLも指定しなかった場合、対話モード移行します。
 
   Examples:
-    narouq download n9669bk
-    narouq download http://ncode.syosetu.com/n9669bk/
-    narouq download n9669bk http://ncode.syosetu.com/n4259s/
-    narouq download 0 1 -f
-    narouq download n9669bk -n
-    narouq download n6864bt --remove
+    narou download n9669bk
+    narou download http://ncode.syosetu.com/n9669bk/
+    narou download n9669bk http://ncode.syosetu.com/n4259s/
+    narou download 0 1 -f
+    narou download n9669bk -n
+    narou download n6864bt --remove
 
   Options:
       EOS
@@ -68,7 +69,10 @@ module Command
     end
 
     def print_prompt(targets)
-      print "#{targets.size}> "
+      # 確認が必要なら:
+      proceed = TTYHelper.ask_yes_no("#{targets.size}件をダウンロードしますか？", default: true)
+      return false unless proceed
+      true
     end
 
     def interactive_mode

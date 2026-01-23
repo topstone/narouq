@@ -6,6 +6,21 @@
 
 require "fileutils"
 require "stringio"
+require "digest"
+
+begin
+  require "zip"
+rescue LoadError
+  # rubyzipが利用できない場合のフラグ
+  ZIP_UNAVAILABLE = true
+end
+
+begin
+  require "rexml/document"
+rescue LoadError
+  # rexmlが利用できない場合のフラグ
+  REXML_UNAVAILABLE = true
+end
 require_relative "novelsetting"
 require_relative "inspector"
 require_relative "illustration"
@@ -26,6 +41,8 @@ class NovelConverter
 
   attr_reader :use_dakuten_font, :stream_io
 
+  SECTION_CONVERT_CACHE_NAME = "section_convert_cache"
+
   def self.extensions_of_converted_files(device)
     exts = [".txt"]
     if device&.kobo?
@@ -34,6 +51,24 @@ class NovelConverter
       exts.push(".epub", device&.ebook_file_ext)
     end
     exts.compact
+  end
+
+  def self.section_convert_cache
+    @section_convert_cache ||= Inventory.load(SECTION_CONVERT_CACHE_NAME)
+  end
+
+  def self.clear_section_convert_cache(id)
+    cache = section_convert_cache
+    removed = cache.delete(id.to_s)
+    cache.save if removed
+  end
+
+  def self.clear_section_convert_cache_entry(id, relative_path)
+    cache = section_convert_cache
+    bucket = cache[id.to_s]
+    return unless bucket&.delete(relative_path)
+    cache.delete(id.to_s) if bucket.empty?
+    cache.save
   end
 
   #
@@ -75,7 +110,7 @@ class NovelConverter
     setting.author = ""
     setting.title = File.basename(filename)
     novel_converter = new(setting, output_filename, options[:display_inspector])
-    text = open(filename, "r:BOM|UTF-8") { |fp| fp.read }.gsub("\r", "")
+    text = File.open(filename, "r:BOM|UTF-8") { |fp| fp.read }.gsub("\r", "")
     if options[:encoding]
       text.force_encoding(options[:encoding]).encode!(Encoding::UTF_8)
     end
@@ -100,7 +135,8 @@ class NovelConverter
       if DAKUTEN_ERB[i]
         Helper.erb_copy(src, dst, binding)
       else
-        FileUtils.install(src, dst)
+        FileUtils.mkdir_p(File.dirname(dst))
+        FileUtils.copy(src, dst)
       end
     end
   end
@@ -126,6 +162,9 @@ class NovelConverter
   # 返り値：正常終了 :success、エラー終了 :error、AozoraEpub3が見つからなかった nil
   #
   def self.txt_to_epub(filename, dst_dir: nil, device: nil, verbose: false, yokogaki: false, use_dakuten_font: false, stream_io: $stdout2)
+    # AozoraEpub3のリソース更新
+    AozoraEpub3.update_resources(yokogaki, use_dakuten_font)
+
     abs_srcpath = File.expand_path(filename)
     src_dir = File.dirname(abs_srcpath)
 
@@ -133,7 +172,7 @@ class NovelConverter
     # MEMO: 外部実行からだと -c FILENAME, -c 1 オプションはぬるぽが出て動かない
     cover_filename = get_cover_filename(src_dir)
     if cover_filename
-      cover_option = %!--cover "#{cover_filename}"!
+      cover_option = "-c 0"   # 先頭の挿絵を表紙として利用
     end
 
     dst_option = ""
@@ -159,13 +198,15 @@ class NovelConverter
     aozoraepub3_path = Narou.aozoraepub3_path
     unless aozoraepub3_path
       error "AozoraEpub3が見つからなかったのでEPUBが出力出来ませんでした。" +
-            "narouq initでAozoraEpub3の設定を行なって下さい"
+            "narou initでAozoraEpub3の設定を行なって下さい"
       return nil
     end
     aozoraepub3_basename = File.basename(aozoraepub3_path)
     aozoraepub3_dir = File.dirname(aozoraepub3_path)
 
-    java_encoding = ""
+    java_encoding = "-Dfile.encoding=UTF-8" +
+                    " -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8" +
+                    " -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
 
     if Helper.os_cygwin?
       abs_srcpath = Helper.convert_to_windows_path(abs_srcpath)
@@ -176,7 +217,7 @@ class NovelConverter
     if Helper.os_windows?
       command = "cmd /c #{command}".encode(Encoding::Windows_31J)
     end
-    activate_dakuten_font_files if use_dakuten_font
+
     stream_io.print "AozoraEpub3でEPUBに変換しています"
     begin
       res = Helper::AsyncCommand.exec(command) do
@@ -184,7 +225,6 @@ class NovelConverter
       end
     ensure
       Dir.chdir(pwd)
-      inactivate_dakuten_font_files if use_dakuten_font
     end
 
     # AozoraEpub3はエラーだとしてもexitコードは0なので、
@@ -196,7 +236,7 @@ class NovelConverter
       return :error
     end
 
-    stdout_capture = res[0].force_encoding('Windows-31J').encode('UTF-8')
+    stdout_capture = res[0]
 
     # Javaの実行環境に由来するであろうエラー
     if stdout_capture =~ /Error occurred during initialization of VM/
@@ -235,6 +275,76 @@ class NovelConverter
     end
     stream_io.puts "変換しました"
     :success
+  end
+
+  #
+  # EPUBファイルのstandard.opfにdc:subjectを追加する
+  #
+  def self.add_dc_subject_to_epub(epub_path, subjects, stream_io: $stdout2)
+    return :success if subjects.nil? || subjects.empty?
+    if defined?(ZIP_UNAVAILABLE)
+      stream_io.error "dc:subject埋め込み機能を使用するにはrubyzip gemが必要です"
+      return :error
+    end
+
+    entries = {}
+    begin
+      # EPUBをメモリ上に展開
+      Zip::File.open(epub_path) do |zip_file|
+        zip_file.each do |entry|
+          entries[entry.name] = entry.get_input_stream.read
+        end
+      end
+
+      # standard.opf 書き換え
+      opf_name, opf_body = entries.find { |name, _| name.end_with?("standard.opf") }
+      unless opf_name
+        stream_io.error "standard.opfファイルが見つかりませんでした"
+        return :error
+      end
+
+      content = opf_body.dup.force_encoding("UTF-8")
+      content.gsub!(/<dc:subject>.*?<\/dc:subject>\s*\n?\s*/m, "")
+      dc_subject_lines = subjects.map(&:strip).reject(&:empty?).map { |s|
+        esc = s.gsub("&","&amp;").gsub("<","&lt;").gsub(">","&gt;").gsub("\"","&quot;").gsub("'","&apos;")
+        "\t\t<dc:subject>#{esc}</dc:subject>"
+      }
+      if dc_subject_lines.any?
+        dc_subjects_xml = dc_subject_lines.join("\n") + "\n"
+        content.sub!(/(\s*)<\/metadata>/, "\n#{dc_subjects_xml}\\1</metadata>")
+      end
+      entries[opf_name] = content.b
+
+      # Windowsでのスレッド内ファイル操作対策: GCを強制実行してファイルハンドルを解放
+      GC.start
+      sleep 0.1
+
+      # 再Zip化 (mimetypeは無圧縮で先頭)
+      File.delete(epub_path)
+      Zip::OutputStream.open(epub_path) do |zos|
+        # mimetype必須
+        if !entries["mimetype"]
+          stream_io.error "mimetypeファイルが見つかりません"
+          return :error
+        end
+
+        # 第1引数に名前、第4引数にZip::Entry::STORED を渡す
+        zos.put_next_entry("mimetype", nil, nil, Zip::Entry::STORED)
+        zos.write entries["mimetype"]
+
+        entries.each do |name, body|
+          next if name == "mimetype"
+          zos.put_next_entry(name)
+          zos.write body
+        end
+      end
+
+      stream_io.puts "dc:subjectを追加しました: #{subjects.join(', ')}"
+      :success
+    rescue => e
+      stream_io.error "dc:subject追加中にエラーが発生しました: #{e.class} - #{e.message}"
+      :error
+    end
   end
 
   #
@@ -326,6 +436,16 @@ class NovelConverter
       epub_ext = ".epub"
     end
     epub_path = txt_path.sub(/\.txt$/, epub_ext)
+    
+    # dc:subject埋め込み処理
+    if options[:dc_subjects] && !options[:dc_subjects].empty?
+      add_dc_subject_status = NovelConverter.add_dc_subject_to_epub(
+        epub_path, options[:dc_subjects], stream_io: stream_io
+      )
+      if add_dc_subject_status == :error
+        stream_io.error "dc:subject埋め込み処理に失敗しましたが、変換を続行します"
+      end
+    end
 
     if !device || !device.kindle? || options[:no_mobi]
       stream_io.puts File.basename(epub_path) + " を出力しました"
@@ -381,6 +501,37 @@ class NovelConverter
     @converter.output_text_dir = output_text_dir
     @data = @novel_id ? Database.instance.get_data("id", @novel_id) : {}
     @stream_io = stream_io
+    @conversion_cache_dirty = false
+  end
+
+  #
+  # メモリリーク回避のための明示的なクリーンアップ
+  #
+  def cleanup
+    # 循環参照を切断（settingは最後まで必要）
+    @inspector&.cleanup if @inspector.respond_to?(:cleanup)
+    @illustration&.cleanup if @illustration.respond_to?(:cleanup)
+    @converter&.cleanup if @converter.respond_to?(:cleanup)
+    
+    # 重いオブジェクトのみ解放
+    @inspector = nil
+    @illustration = nil
+    @converter = nil
+    @data = nil
+    # @settingは最後まで必要なので解放しない
+  end
+
+  #
+  # 小説のタグ情報をdc:subject用の配列として取得
+  #
+  def get_dc_subjects_from_tags(exclude_tags_setting = "404,end")
+    return [] unless @data && @data["tags"]
+    tags = @data["tags"]
+    return [] unless tags.is_a?(Array)
+    
+    # 除外タグの設定を解析
+    excluded_tags = exclude_tags_setting.split(",").map(&:strip).reject(&:empty?)
+    tags.reject { |tag| excluded_tags.include?(tag) }.map(&:strip).reject(&:empty?)
   end
 
   #
@@ -408,6 +559,10 @@ class NovelConverter
     display_footer
 
     array_of_output_path
+  ensure
+    # 変換完了後にリソースを解放（ensureで確実に実行）
+    flush_conversion_cache
+    cleanup
   end
 
   def initialize_event
@@ -416,9 +571,12 @@ class NovelConverter
     on(:"convert_main.init") do |subtitles|
       progressbar = ProgressBar.new(subtitles.size, io: stream_io)
     end
+
     on(:"convert_main.loop") do |i|
-      progressbar.output(i) if progressbar
+      # 毎回ではな10件ごとに絞る
+      progressbar.output(i) if progressbar && (i % 10).zero?
     end
+
     on(:"convert_main.finish") do
       progressbar.clear if progressbar
     end
@@ -433,10 +591,102 @@ class NovelConverter
     stream_io.puts "縦書用の変換が終了しました"
   end
 
+  def caching_available?
+    !!@novel_id
+  end
+
+  def section_convert_bucket
+    return {} unless caching_available?
+    cache = self.class.section_convert_cache
+    cache[@novel_id.to_s] ||= {}
+  end
+
+  def conversion_context_signature
+    @conversion_context_signature ||= begin
+      setting_signature = Digest::SHA256.hexdigest(Marshal.dump(@setting.settings))
+      replace_signature = Digest::SHA256.hexdigest(Marshal.dump(@setting.replace_pattern))
+      Digest::SHA256.hexdigest(Marshal.dump([setting_signature, replace_signature, converter_signature]))
+    end
+  end
+
+  def converter_signature
+    @converter_signature ||= begin
+      path = File.join(@setting.archive_path, "converter.rb")
+      if File.exist?(path)
+        Digest::SHA256.file(path).hexdigest
+      else
+        klass = @converter&.class
+        klass_name = klass&.name || "blank"
+        Digest::SHA256.hexdigest(klass_name)
+      end
+    end
+  end
+
+  def conversion_digest(original_section, relative_path)
+    return nil unless caching_available?
+    Digest::SHA256.hexdigest(Marshal.dump([relative_path, original_section, conversion_context_signature]))
+  end
+
+  def fetch_cached_section(relative_path, digest)
+    return nil unless caching_available?
+    cached = section_convert_bucket[relative_path]
+    return nil unless cached
+    return nil unless cached["digest"] == digest
+    return nil unless cached["signature"] == conversion_context_signature
+    {
+      section: deep_clone(cached["section"]),
+      use_dakuten_font: cached["use_dakuten_font"] ? true : false
+    }
+  end
+
+  def store_cached_section(relative_path, digest, section, use_dakuten_font)
+    return unless caching_available?
+    payload = {
+      "digest" => digest,
+      "signature" => conversion_context_signature,
+      "section" => deep_clone(section),
+      "use_dakuten_font" => !!use_dakuten_font
+    }
+    bucket = section_convert_bucket
+    changed = bucket[relative_path] != payload
+    if changed
+      bucket[relative_path] = payload
+      mark_conversion_cache_dirty
+    end
+  end
+
+  def mark_conversion_cache_dirty
+    @conversion_cache_dirty = true if caching_available?
+  end
+
+  def flush_conversion_cache
+    return unless caching_available?
+    return unless @conversion_cache_dirty
+    self.class.section_convert_cache.save
+    @conversion_cache_dirty = false
+  end
+
+  def clear_cached_section(relative_path)
+    return unless caching_available?
+    bucket = section_convert_bucket
+    changed = bucket.delete(relative_path)
+    mark_conversion_cache_dirty if changed
+  end
+
+  def deep_clone(object)
+    Marshal.load(Marshal.dump(object))
+  end
+
   def load_novel_section(subtitle_info, section_save_dir)
     file_subtitle = subtitle_info["file_subtitle"] || subtitle_info["subtitle"]   # 互換性維持のため
     path = section_save_dir.join("#{subtitle_info["index"]} #{file_subtitle}.yaml")
-    YAML.unsafe_load_file(path)
+    begin
+      YAML.unsafe_load_file(path)
+    rescue SystemCallError => e
+      # bootsnap on Windows can raise Errno::E01 errors, fallback to standard YAML
+      raise if e.is_a?(Errno::ENOENT)
+      YAML.unsafe_load(File.read(path))
+    end
   rescue Errno::ENOENT => e
     stream_io.puts
     stream_io.error(<<~MSG.termcolor)
@@ -452,13 +702,25 @@ class NovelConverter
     cover_chuki = create_cover_chuki
     device = Narou.get_device
     setting = @setting
-    toc["title"] = setting.novel_title unless setting.novel_title.empty?
+
+    toc["title"]  = setting.novel_title  unless setting.novel_title.empty?
     toc["author"] = setting.novel_author unless setting.novel_author.empty?
+
     processing_title = toc["title"]
     processing_title += "_#{index}" if index
     processed_title = decorate_title(processing_title)
     template_name = (device && device.ibunko? ? NOVEL_TEXT_TEMPLATE_NAME_FOR_IBUNKO : NOVEL_TEXT_TEMPLATE_NAME)
-    Template.get(template_name, binding, 1.1)
+
+    # テンプレートをキャッシュする
+    # コンパイル済みERB（またはProc）をキャッシュして binding だけ都度差し込む
+    @__template_cache ||= {}
+    compiled = @__template_cache[template_name]
+    unless compiled
+      compiled = Template.compile(template_name, 1.1)
+      @__template_cache[template_name] = compiled
+    end
+
+    Template.render(compiled, binding)
   end
 
   #
@@ -686,6 +948,9 @@ class NovelConverter
   # subtitle info から変換処理をする
   #
   def subtitles_to_sections(subtitles, html)
+    # 章データをキャッシュ
+    @__section_cache ||= {}
+
     sections = []
     section_save_dir = Downloader.get_novel_section_save_dir(@setting.archive_path)
 
@@ -694,30 +959,85 @@ class NovelConverter
     subtitles.each_with_index do |subinfo, i|
       trigger(:"convert_main.loop", i)
       @converter.current_index = i
-      section = load_novel_section(subinfo, section_save_dir)
-      if section["chapter"].length > 0
-        section["chapter"] = @converter.convert(section["chapter"], "chapter")
+
+      # YAMLロードをキャッシュ
+      key = subinfo["index"]
+      original_section = @__section_cache[key]
+      unless original_section
+        original_section = load_novel_section(subinfo, section_save_dir)
+        @__section_cache[key] = original_section
       end
 
-      @inspector.subtitle = section["subtitle"]
-      section["subtitle"] = @converter.convert(section["subtitle"], "subtitle")
+      section_file_name = "#{subinfo["index"]} #{subinfo["file_subtitle"]}.yaml"
+      section_file_relative_path = File.join(Downloader::SECTION_SAVE_DIR_NAME, section_file_name)
+      digest = conversion_digest(original_section, section_file_relative_path)
+      cached = digest && fetch_cached_section(section_file_relative_path, digest)
+      if cached
+        @use_dakuten_font ||= cached[:use_dakuten_font]
+        sections << cached[:section]
+        next
+      end
+
+      # キャッシュを壊さないようディープ寄りにdup
+      # （chapter/subtitle/elementなど後で書き換えるので）
+      section = original_section.dup
+      section["element"] = original_section["element"].dup
+
+      # data_type 判定
       element = section["element"]
       data_type = element.delete("data_type") || "text"
       @converter.data_type = data_type
+
+      # HTML→青空変換が必要なやつを先にプレーンテキスト化
+      preprocessed_element_texts = {}
       element.each do |text_type, elm_text|
         if data_type != "text"
           html.string = elm_text
           elm_text = html.to_aozora(pre_html: data_type == "pre_html")
         end
-        element[text_type] = @converter.convert(elm_text, text_type)
+        preprocessed_element_texts[text_type] = elm_text
       end
+
+      # まとめてコンバータに渡すためのバッチ入力を作る
+      batch_inputs = {}
+
+      # chapter
+      if section["chapter"] && !section["chapter"].empty?
+        batch_inputs[:chapter] = [section["chapter"], "chapter"]
+      end
+
+      # subtitle
+      @inspector.subtitle = section["subtitle"]
+      batch_inputs[:subtitle] = [section["subtitle"], "subtitle"]
+
+      # element 各種
+      preprocessed_element_texts.each do |text_type, body_text|
+        batch_inputs[[:element, text_type]] = [body_text, text_type]
+      end
+
+      # 一括変換
+      converted = @converter.convert_multi(batch_inputs)
+      if batch_inputs[:chapter]
+        section["chapter"] = converted[:chapter]
+      end
+
+      section["subtitle"] = converted[:subtitle]
+
+      element.keys.each do |text_type|
+        section["element"][text_type] = converted[[:element, text_type]]
+      end
+
       sections << section
+      store_cached_section(section_file_relative_path, digest, section, @converter.use_dakuten_font) if digest
     end
-    @use_dakuten_font = @converter.use_dakuten_font
+
+    @use_dakuten_font ||= @converter.use_dakuten_font
     sections
   ensure
     trigger(:"convert_main.finish")
+    flush_conversion_cache
   end
+
 
   #
   # テキストデータ先頭二行からタイトルと作者名を取得

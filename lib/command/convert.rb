@@ -55,20 +55,23 @@ module Command
   ・管理小説以外にもテキストファイルを変換出来ます。
     テキストファイルのファイルパスを指定します。
   ※複数指定した場合に-oオプションがあった場合、ファイル名に連番がつきます。
-  ・MOBI化する場合は narouq setting device=kindle をして下さい。
+  ・MOBI化する場合は narou setting device=kindle をして下さい。
   ・device=kobo の場合、.kepub.epub を出力します。
 
   Examples:
-    narouq convert n9669bk
-    narouq convert http://ncode.syosetu.com/n9669bk/
-    narouq convert 異世界迷宮で奴隷ハーレムを
-    narouq convert 1 -o "ハーレム -変換済み-.txt"
-    narouq convert mynovel.txt --enc sjis
+    narou convert n9669bk
+    narou convert http://ncode.syosetu.com/n9669bk/
+    narou convert 異世界迷宮で奴隷ハーレムを
+    narou convert 1 -o "ハーレム -変換済み-.txt"
+    narou convert mynovel.txt --enc sjis
 
   Options:
       EOS
       @opt.on("-o FILE", "--output FILE", "出力ファイル名を指定する。フォルダパス部分は無視される") { |filename|
         @options["output"] = filename
+      }
+      @opt.on("--make-zip", "i文庫用のzipファイルを作る") {
+        @options["make-zip"] = true
       }
       @opt.on("-e ENCODING", "--enc ENCODING",
               "テキストファイル指定時の文字コードを指定する。デフォルトはUTF-8") { |encoding|
@@ -105,10 +108,10 @@ module Command
       @opt.separator <<-EOS
 
   Configuration:
-    --no-epub, --no-mobi, --no-strip, --no-zip, --no-open , --inspect は narouq setting コマンドで恒常的な設定にすることが可能です。
+    --make-zip, --no-epub, --no-mobi, --no-strip, --no-zip, --no-open , --inspect は narou setting コマンドで恒常的な設定にすることが可能です。
     convert.copy-to を設定すれば変換したEPUB/MOBIを指定のフォルダに自動でコピー出来ます。
     device で設定した端末が接続されていた場合、対応するデータを自動送信します。
-    詳しくは narouq setting --help を参照して下さい。
+    詳しくは narou setting --help を参照して下さい。
       EOS
     end
 
@@ -196,13 +199,33 @@ module Command
 
     def convert_novels(argv)
       tagname_to_ids(argv)
+      total_count = argv.length
+      completed_count = 0
+      
+      $stdout2.puts "変換処理開始: #{total_count}件の小説を処理します"
+      
       argv.each.with_index(1) do |target, index|
-        Narou.lock(target) do
-          convert_novel_main(target, index)
+        begin
+          $stdout2.puts "[#{index}/#{total_count}] 処理中: #{target}"
+          Narou.lock(target) do
+            convert_novel_main(target, index)
+          end
+          completed_count += 1
+          $stdout2.puts "[#{index}/#{total_count}] 完了: #{target}"
+        rescue => e
+          if ENV["NAROU_ENV"] == "test"
+            # テスト時は握りつぶさずに原因を見える化
+            raise
+          else
+            $stdout2.error "[#{index}/#{total_count}] エラー: #{target} - #{e.message}"
+            # 個別のエラーでは処理を継続
+          end
         end
       end
+      
+      $stdout2.puts "変換処理完了: #{completed_count}/#{total_count}件が正常に変換されました"
     rescue Interrupt
-      $stdout2.puts "変換を中断しました"
+      $stdout2.puts "変換を中断しました (#{completed_count}/#{total_count}件完了)"
       exit Narou::EXIT_INTERRUPT
     end
 
@@ -252,7 +275,9 @@ module Command
         ebook_file = hook_call(:convert_txt_to_ebook_file)
         next if ebook_file.nil?
         if ebook_file
-          copy_to_converted_file(ebook_file)
+          copy_to_converted_file(ebook_file, io: stream_io)
+          # ZIP専用のコピー先が設定されている場合、ZIPを追加コピー
+          copy_to_converted_zip_file(ebook_file, io: stream_io)
           send_file_to_device(ebook_file) unless using_send_command
         end
       end
@@ -297,16 +322,72 @@ module Command
     # 変換された整形済みテキストファイルをデバイスに対応した書籍データに変換する
     #
     def convert_txt_to_ebook_file
-      return NovelConverter.convert_txt_to_ebook_file(@converted_txt_path, {
+      # dc:subject埋め込み設定の確認とタグ情報の取得
+      dc_subjects = nil
+      if @options["add-dc-subject-to-epub"] && @novel_data && @novel_data["tags"]
+        tags = @novel_data["tags"]
+        if tags.is_a?(Array)
+          # 除外タグの設定を取得
+          exclude_tags_setting = @options["dc-subject-exclude-tags"]
+          
+          # 初回実行時にデフォルト値を設定
+          if exclude_tags_setting.nil?
+            exclude_tags_setting = "404,end"
+            # 設定を保存
+            local_settings = Inventory.load("local_setting")
+            local_settings["convert.dc-subject-exclude-tags"] = exclude_tags_setting
+            local_settings.save
+          end
+          
+          excluded_tags = exclude_tags_setting.split(",").map(&:strip).reject(&:empty?)
+          dc_subjects = tags.reject { |tag| excluded_tags.include?(tag) }.map(&:strip).reject(&:empty?)
+        end
+      end
+      
+      # EPUB生成（dc:subject 挿入を含む）
+      # ZIPも生成する場合(cleanup_tempの影響を避けるため)は一旦txtのクリーンアップを抑止
+      no_cleanup_txt = (@argument_target_type == :file) || @options["make-zip"]
+      ebook_path = NovelConverter.convert_txt_to_ebook_file(@converted_txt_path, {
         use_dakuten_font: @use_dakuten_font,
         device: @device,
         verbose: @options["verbose"],
         no_epub: @options["no-epub"],
         no_mobi: @options["no-mobi"],
         no_strip: @options["no-strip"],
-        no_cleanup_txt: @argument_target_type == :file,
-        yokogaki: @options["yokogaki"]
+        no_cleanup_txt: no_cleanup_txt,
+        yokogaki: @options["yokogaki"],
+        dc_subjects: dc_subjects
       })
+      # その他の処理 -> EPUBタグ挿入処理(有効時) -> ZIP作成処理(有効時)
+      # ZIP作成はEPUB生成の成否に依存させない（TXTから生成するため）
+      if @options["make-zip"] && !@options["no-zip"]
+        begin
+          zip_path = generate_ibunko_zip
+          copy_to_converted_zip_file(zip_path, io: stream_io) if zip_path
+        rescue => e
+          $stdout2.error "ZIP生成に失敗しました: #{e.message}"
+        end
+      end
+      ebook_path
+    end
+
+    #
+    # i文庫用ZIP生成を明示的に実行する
+    #
+    def generate_ibunko_zip
+      prev_device = @device
+      ibunko_device = Narou.get_device("ibunko")
+      # デバイス情報を一時的に差し替えてフック処理を使う
+      @device = ibunko_device
+      # 純青空テキストからのZIP生成（EPUB最適化要素を除去）
+      if Device::Ibunko.instance_methods(false).include?(:create_pure_aozora_zip)
+        Device::Ibunko.instance_method(:create_pure_aozora_zip).bind(self).call
+      else
+        # フォールバック（互換性維持）
+        Device::Ibunko.instance_method(:hook_convert_txt_to_ebook_file).bind(self).call { ->{} }
+      end
+    ensure
+      @device = prev_device
     end
 
     class NoSuchDirectory < StandardError; end
@@ -314,12 +395,13 @@ module Command
     #
     # convert.copy-to で指定されたディレクトリに書籍データをコピーする
     #
-    def copy_to_converted_file(src_path, io: $stdout2)
+    def copy_to_converted_file(src_path, io: nil)
+      io ||= (respond_to?(:stream_io) ? stream_io : nil) || $stdout2
       copy_to_dir = get_copy_to_directory
       return nil unless copy_to_dir
       FileUtils.copy(src_path, copy_to_dir)
       copied_file_path = File.join(copy_to_dir, File.basename(src_path))
-      io.puts copied_file_path.to_s.encode(Encoding::UTF_8) + " へコピーしました"
+      $stdout2.puts copied_file_path.to_s.encode(Encoding::UTF_8) + " へコピーしました"
       copied_file_path
     rescue NoSuchDirectory => e
       io.error "#{e.message} はフォルダではないかすでに削除されています。コピー出来ませんでした"
@@ -357,6 +439,26 @@ module Command
     end
     private :get_copy_to_directory
 
+    #
+    # ZIPファイルを convert.copy-zip-to にコピーする
+    #
+    def copy_to_converted_zip_file(src_path, io: nil)
+      io ||= (respond_to?(:stream_io) ? stream_io : nil) || $stdout2
+      return nil unless File.extname(src_path).downcase == ".zip"
+      copy_to_dir = @options["copy-zip-to"]
+      return nil if copy_to_dir.nil? || copy_to_dir.to_s.empty?
+      unless File.directory?(copy_to_dir)
+        raise NoSuchDirectory, copy_to_dir
+      end
+      FileUtils.copy(src_path, copy_to_dir)
+      copied_file_path = File.join(copy_to_dir, File.basename(src_path))
+      $stdout2.puts copied_file_path.to_s.encode(Encoding::UTF_8) + " へZIPをコピーしました"
+      copied_file_path
+    rescue NoSuchDirectory => e
+      io.error "#{e.message} はフォルダではないかすでに削除されています。ZIPをコピー出来ませんでした"
+      nil
+    end
+
     def grouping_values
       result = OpenStruct.new
       grouping = @options["copy-to-grouping"]
@@ -386,7 +488,7 @@ module Command
           rescue Device::SendFailure
           end
           if copy_to_path
-            io.puts copy_to_path.to_s.encode(Encoding::UTF_8) + " へコピーしました"
+            $stdout2.puts copy_to_path.to_s.encode(Encoding::UTF_8) + " へコピーしました"
           else
             io.error "送信に失敗しました"
             @@sending_error_list << ebook_file

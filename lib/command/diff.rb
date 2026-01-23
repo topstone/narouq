@@ -28,24 +28,24 @@ module Command
   ・もし自分の好きな差分表示プログラムを使いたい場合、difftoolを設定して変更することが出来ます(下記参照)
 
   Examples:
-    narouq diff          # 直前に更新した小説の差分を表示
-    narouq diff 6
-    narouq diff 6 -n 2   # 最新から2番目の差分との比較
-    narouq diff 6 -2     # -n 2 の省略した記述方法
-    narouq diff 6 2013.02.21@01.39.46   # 差分を直接指定
-    narouq diff 6 -l     # 過去にどの話数の差分があるのかを確認
+    narou diff          # 直前に更新した小説の差分を表示
+    narou diff 6
+    narou diff 6 -n 2   # 最新から2番目の差分との比較
+    narou diff 6 -2     # -n 2 の省略した記述方法
+    narou diff 6 2013.02.21@01.39.46   # 差分を直接指定
+    narou diff 6 -l     # 過去にどの話数の差分があるのかを確認
 
     # 自分の好きな差分表示プログラムを使う場合
-    narouq s difftool="C:\\Program Files\\WinMerge\\WinMergeU.exe"
-    narouq s difftool=colordiff      # コマンドラインツールを指定したり
+    narou s difftool="C:\\Program Files\\WinMerge\\WinMergeU.exe"
+    narou s difftool=colordiff      # コマンドラインツールを指定したり
     # Narou.rbオリジナルの差分表示に戻す場合は設定を削除する
-    narouq s difftool=
+    narou s difftool=
 
     # difftoolに渡す引数(指定しなければ単純に新旧ファイルを引数に呼び出す)
     # 特殊な変数 %NEW : 最新データの差分用ファイルパス
     #            %OLD : 古い方の差分用ファイルパス
-    narouq s difftool.arg='-e -x -ub -dl "OLD" -dr "NEW" %OLD %NEW'
-    narouq s difftool.arg="-u %OLD %NEW"
+    narou s difftool.arg='-e -x -ub -dl "OLD" -dr "NEW" %OLD %NEW'
+    narou s difftool.arg="-u %OLD %NEW"
 
   Options:
       EOS
@@ -212,8 +212,20 @@ module Command
       cache_sections = []
       cache_section_list.each do |path|
         match_latest_path = File.join(novel_dir, File.basename(path))
-        latest_novel_sections << YAML.unsafe_load_file(match_latest_path) if File.exist?(match_latest_path)
-        cache_sections << YAML.unsafe_load_file(path)
+        if File.exist?(match_latest_path)
+          begin
+            latest_novel_sections << YAML.unsafe_load_file(match_latest_path)
+          rescue SystemCallError
+            # bootsnap on Windows can raise Errno::E01 errors, fallback to standard YAML
+            latest_novel_sections << YAML.unsafe_load(File.read(match_latest_path))
+          end
+        end
+        begin
+          cache_sections << YAML.unsafe_load_file(path)
+        rescue SystemCallError
+          # bootsnap on Windows can raise Errno::E01 errors, fallback to standard YAML
+          cache_sections << YAML.unsafe_load(File.read(path))
+        end
       end
 
       novel_info = Database.instance[id]
@@ -250,7 +262,7 @@ module Command
         list: []
       }
       cache_list = get_sorted_cache_list(id)
-      return list if cache_list.empty?
+      return list if cache_list.blank?
       cache_list.each.with_index(1) do |cache_path, i|
         objects = []
         version_string = File.basename(cache_path)

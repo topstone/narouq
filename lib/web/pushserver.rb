@@ -27,6 +27,7 @@ module Narou
       @accepted_domains = ["*"]
       @port = 31000
       @connections = []
+      @server_thread = nil
       clear_history
     end
 
@@ -36,8 +37,10 @@ module Narou
         port: @port,
         host: @host
       })
-      Thread.new do
+      @server_thread = Thread.new do
         @server.run do |ws|
+          que = nil
+          thread = nil
           begin
             ws.handshake
             que = Queue.new
@@ -48,9 +51,16 @@ module Narou
             end
 
             thread = Thread.new do
-              while true
-                data = que.pop
-                ws.send(data)
+              begin
+                while true
+                  data = que.pop
+                  ws.send(data)
+                end
+              rescue Errno::ECONNRESET, Errno::EPIPE, IOError => e
+                # 接続が切れた場合、スレッドを終了
+              rescue => e
+                # その他のエラーもログに出力してスレッド終了
+                puts "[ERROR] WebSocket send thread error: #{e.class}: #{e.message}" if $DEBUG
               end
             end
 
@@ -66,9 +76,19 @@ module Narou
                 }))
               end
             end
+          rescue WebSocket::Error => e
+            # WebSocketハンドシェイクエラー（通常はクライアントの切断）
+            # デバッグレベルでログ出力（エラーレベルだと大量に出力される）
+            puts "[DEBUG] WebSocket handshake failed: #{e.message}" if $DEBUG
           rescue Errno::ECONNRESET => e
+            # 接続リセットエラー
+            puts "[DEBUG] WebSocket connection reset: #{e.message}" if $DEBUG
+          rescue StandardError => e
+            # その他の予期しないエラー
+            puts "[ERROR] WebSocket unexpected error: #{e.class}: #{e.message}"
+            puts e.backtrace.first(5).join("\n") if $DEBUG
           ensure
-            @connections.delete(que)
+            @connections.delete(que) if que
             thread.terminate if thread
           end
         end
@@ -79,7 +99,11 @@ module Narou
     # PushServer を停止させる
     #
     def quit
-      @server.quit
+      @server.quit if @server
+      if @server_thread && @server_thread.alive?
+        @server_thread.kill
+        @server_thread.join(1) # 最大1秒待つ
+      end
     end
 
     def clear_history

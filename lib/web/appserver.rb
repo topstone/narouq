@@ -11,8 +11,11 @@ require "socket"
 require "sinatra/base"
 require "sinatra/json"
 require "sinatra/reloader" if $development
+require "securerandom"
+require "rack/session"
+require "rack/protection"
 # require "better_errors" if $debug
-require "tilt/erubis"
+require "tilt/erubi"
 require "tilt/haml"
 require "tilt/sass"
 require_relative "../commandline"
@@ -33,15 +36,17 @@ class Narou::AppServer < Sinatra::Base
   configure do
     set :app_file, __FILE__
     set :erb, trim: "-"
+    set :quiet, true
     enable :protection
     enable :sessions
 
     set(:version) do
-      Command::Version.create_version_string
+      Command.load_command("version").create_version_string
     end
 
     set :environment, :production unless $development
-    set :server, :webrick
+    set :server, :puma
+    set :server_settings, { Silent: true }
 
     if $debug
       use BetterErrors::Middleware
@@ -69,7 +74,7 @@ class Narou::AppServer < Sinatra::Base
   # サーバのアドレスを生成
   #
   # portは初回起動時にランダムで設定する。次回からは同じ設定を引き継ぐ。
-  # bindは自分で設定する場合は narouq s server-bind=address で行う。
+  # bindは自分で設定する場合は narou s server-bind=address で行う。
   # bindは設定しなかった場合は起動したPCのプライベートIPアドレスが設定される。
   # この場合はLAN内からアクセス出来る。
   # bindがlocalhostの場合は実際には127.0.0.1で処理される。(起動したPCでしか
@@ -81,14 +86,12 @@ class Narou::AppServer < Sinatra::Base
     global_setting = Inventory.load("global_setting", :global)
     port, bind = global_setting["server-port"], global_setting["server-bind"]
     port = user_port if user_port
-    ipaddress = my_ipaddress
     unless port
       port = rand(4000..65000)
       global_setting["server-port"] = port
       global_setting.save
     end
-    bind = "127.0.0.1" if bind == "localhost"
-    host = bind ? bind : ipaddress
+    host = bind || "127.0.0.1"
     set :port, port
     set :bind, host
     {
@@ -162,19 +165,17 @@ class Narou::AppServer < Sinatra::Base
   end
 
   # サーバーの認証の設定
-  # とりあえずDigest認証のみ
+  # - Digest認証がRackの機能からオミットされたので、Basic認証に変更
   def setup_server_authentication
-    auth = Inventory.load("global_setting", :global).group("server-digest-auth")
+    auth = Inventory.load("global_setting", :global).group("server-basic-auth")
     user = auth.user
-    hashed = auth.hashed_password
-    passwd = hashed || auth.password
+    passwd = auth.password  # ハッシュは使わない
 
-    # enableかつユーザー名とパスワードが設定されている時のみ認証を有効にする
     return unless auth.enable && user && passwd
 
     self.class.class_exec do
-      use Rack::Auth::Digest::MD5, { realm: "narou.rb", opaque: "", passwords_hashed: hashed } do |username|
-        passwd if username == user
+      use Rack::Auth::Basic, "narou.rb" do |username, password|
+        username == user && password == passwd
       end
     end
   end
@@ -216,7 +217,7 @@ class Narou::AppServer < Sinatra::Base
 
   before "/settings" do
     @title = "環境設定"
-    @setting_variables = Command::Setting.get_setting_variables
+    @setting_variables = Command.load_command("setting").get_setting_variables
     @error_list = {}
     @global_replace_pattern = @replace_pattern = Narou.global_replace_pattern
   end
@@ -251,7 +252,7 @@ class Narou::AppServer < Sinatra::Base
     # されないように最後にまわす
     built_arguments << "device=#{device}" if device
     unless built_arguments.empty?
-      setting = Command::Setting.new
+      setting = Command.load_command("setting").new
       setting.on(:error) do |msg, name|
         if name
           @error_list[name] = msg
@@ -259,6 +260,13 @@ class Narou::AppServer < Sinatra::Base
       end
       setting.execute!(built_arguments, io: Narou::NullIO.new)
       Inventory.clear
+      
+      # 自動アップデート設定が変更された場合、スケジューラーを再起動
+      if built_arguments.any? { |arg| arg.start_with?("update.auto-schedule") }
+        require_relative "../command/update/scheduler"
+        Command.load_command("update")::Scheduler.stop
+        Command.load_command("update")::Scheduler.start
+      end
     end
 
     # 置換設定保存
@@ -422,7 +430,13 @@ class Narou::AppServer < Sinatra::Base
     postscripts_count = 0
     toc["subtitles"].each do |sub|
       begin
-        element = YAML.unsafe_load_file(downloader.section_file_path(sub))["element"]
+        section_path = downloader.section_file_path(sub)
+        begin
+          element = YAML.unsafe_load_file(section_path)["element"]
+        rescue SystemCallError
+          # bootsnap on Windows can raise Errno::E01 errors, fallback to standard YAML
+          element = YAML.unsafe_load(File.read(section_path))["element"]
+        end
         data_type = element["data_type"] || "text"
         introduction = element["introduction"] || ""
         postscript = element["postscript"] || ""
@@ -468,34 +482,278 @@ class Narou::AppServer < Sinatra::Base
   # API's
   # -------------------------------------------------------------------------------
 
-  get "/api/list" do
+  # 小説一覧APIのキャッシュ機能
+  @@api_list_cache = {}
+  @@api_list_cache_time = nil
+  @@api_list_cache_duration = 10 # 10秒キャッシュ
+
+  # 処理用完全IDキャッシュシステム
+  @@full_sorted_ids_cache = {}
+  @@full_ids_cache_time = nil
+  @@full_ids_cache_duration = 10 # 10秒キャッシュ
+
+  # API一覧のキャッシュを無効化する
+  def self.clear_api_list_cache
+    @@api_list_cache = {}
+    @@api_list_cache_time = nil
+  end
+
+  # 処理用完全IDキャッシュを無効化する
+  def self.clear_full_ids_cache
+    @@full_sorted_ids_cache = {}
+    @@full_ids_cache_time = nil
+  end
+
+  # 全キャッシュを無効化する
+  def self.clear_all_cache
+    clear_api_list_cache
+    clear_full_ids_cache
+  end
+
+  # 小説総数を取得するAPI
+  get "/api/novels/count" do
+    json({ count: Database.instance.get_object.size })
+  end
+
+  # フィルター条件に一致する全小説IDを取得
+  get "/api/novels/all_ids" do
+    begin
+      debug_puts "[DEBUG] /api/novels/all_ids called with params: #{params.inspect}"
+      all_ids = get_all_filtered_novel_ids(params)
+      debug_puts "[DEBUG] Retrieved #{all_ids.length} IDs: #{all_ids.inspect}"
+      json({ ids: all_ids })
+    rescue StandardError => e
+      puts "[ERROR] /api/novels/all_ids error: #{e.message}"
+      puts e.backtrace.join("\n")
+      status 500
+      json({ error: e.message })
+    end
+  end
+
+  # フィルター条件に一致する全小説IDを取得する共通メソッド
+  def get_all_filtered_novel_ids(params)
     view_frozen = query_to_boolean(params["view_frozen"], default: true)
     view_nonfrozen = query_to_boolean(params["view_nonfrozen"], default: true)
+    
+    # 検索パラメータの安全な取得
+    search_value = nil
+    if params["search"] && params["search"].is_a?(Hash)
+      search_value = params["search"]["value"]
+    elsif params["search[value]"]
+      search_value = params["search[value]"]
+    end
+    
+    # フィルタ文字列の取得
+    url_filter = params["filter"]
+    combined_filter = [search_value, url_filter].compact.reject(&:empty?).join(" ")
+    
+    # データベースから全データを取得
     database_values = Database.instance.get_object.values
-    json_objects = {
-      draw: 1
-    }
-    json_objects[:data] =
-      database_values.map do |data|
+    debug_puts "[DEBUG] Database values count: #{database_values.length}"
+    filtered_data = database_values.map do |data|
+      id = data["id"]
+      debug_puts "[DEBUG] Processing novel ID: #{id} (#{id.class})"
+      is_frozen = Narou.novel_frozen?(id)
+      tags = data["tags"] || []
+      
+      {
+        id: id.to_i,  # 数値として保持
+        title: data["title"],
+        author: data["author"],
+        sitename: data["sitename"],
+        status: data["status"],
+        frozen: is_frozen,
+        raw_tags: tags
+      }
+    end
+    
+    # 凍結状態でフィルタリング
+    unless view_frozen && view_nonfrozen
+      filtered_data = filtered_data.select do |item|
+        if view_frozen && !view_nonfrozen
+          item[:frozen]
+        elsif !view_frozen && view_nonfrozen
+          !item[:frozen]
+        else
+          true
+        end
+      end
+    end
+    
+    # 検索フィルタリング
+    if combined_filter && !combined_filter.strip.empty?
+      begin
+        # フィルタ文字列を単語に分割
+        filter_words = combined_filter.split(/\s+/)
+        
+        filtered_data = filtered_data.select do |item|
+          filter_words.all? do |word|
+            if word.match(/^([-^]?)tag:(.+)$/i)
+              # タグフィルタリング（OR検索対応）
+              exclude_flag = $1
+              tag_names_part = $2.downcase
+              
+              # パイプ（|）でOR検索をサポート
+              tag_names = tag_names_part.split('|').map(&:strip)
+              
+              if tag_names.size > 1
+                # OR検索: いずれかのタグにマッチすればOK
+                has_any_tag = tag_names.any? do |tag_name|
+                  item[:raw_tags].any? { |tag| tag.downcase.include?(tag_name) }
+                end
+                
+                case exclude_flag
+                when "-", "^"
+                  !has_any_tag  # いずれのタグも持たない
+                else
+                  has_any_tag   # いずれかのタグを持つ
+                end
+              else
+                # 単一タグの従来処理
+                tag_name = tag_names.first
+                has_tag = item[:raw_tags].any? { |tag| tag.downcase.include?(tag_name) }
+                
+                case exclude_flag
+                when "-", "^"
+                  !has_tag  # 除外
+                else
+                  has_tag   # 包含
+                end
+              end
+            else
+              # 通常の検索フィルタリング
+              search_regex = Regexp.new(Regexp.escape(word), Regexp::IGNORECASE)
+              item[:title].to_s.match?(search_regex) || 
+              item[:author].to_s.match?(search_regex) ||
+              item[:sitename].to_s.match?(search_regex) ||
+              item[:status].to_s.match?(search_regex) ||
+              item[:raw_tags].any? { |tag| tag.match?(search_regex) }
+            end
+          end
+        end
+      rescue StandardError => e
+        # エラーの場合はフィルターを適用せずに続行
+      end
+    end
+    
+    # IDのみを抽出して返す
+    result_ids = filtered_data.map { |item| item[:id] }
+    debug_puts "[DEBUG] Final result IDs: #{result_ids.inspect}"
+    result_ids
+  end
+
+  # 小説一覧処理の共通メソッド
+  def process_novel_list_request(params)
+    view_frozen = query_to_boolean(params["view_frozen"], default: true)
+    view_nonfrozen = query_to_boolean(params["view_nonfrozen"], default: true)
+  
+    # DataTablesのサーバーサイド処理パラメータ
+    draw = params["draw"].to_i
+    start = params["start"].to_i || 0
+    length = params["length"].to_i || 50
+    
+    # 検索パラメータの安全な取得
+    search_value = nil
+    if params["search"] && params["search"].is_a?(Hash)
+      search_value = params["search"]["value"]
+    elsif params["search[value]"]
+      search_value = params["search[value]"]
+    end
+    
+    # フィルタパラメータの取得（タグフィルタリング含む）
+    filter_value = params["filter"]
+    
+    # ソートパラメータの安全な取得
+    order_column = nil
+    order_dir = nil
+    if params["order"] && params["order"].is_a?(Hash) && params["order"]["0"]
+      order_column = params["order"]["0"]["column"].to_i
+      order_dir = params["order"]["0"]["dir"]
+    elsif params["order[0][column]"] && params["order[0][dir]"]
+      order_column = params["order[0][column]"].to_i
+      order_dir = params["order[0][dir]"]
+    end
+    
+    # ソート状態をサーバー側に保存
+    if order_column && order_dir
+      debug_puts "[DEBUG] Saving sort state: column=#{order_column}, dir=#{order_dir}"
+      server_setting = Inventory.load("server_setting", :global)
+      server_setting["current_sort"] = {
+        "column" => order_column,
+        "dir" => order_dir
+      }
+      begin
+        server_setting.save
+        debug_puts "[DEBUG] Sort state saved successfully"
+      rescue => e
+        debug_puts "[DEBUG] Failed to save sort state: #{e.message}"
+        # ソート状態の保存に失敗してもリクエスト処理は継続
+      end
+    else
+      debug_puts "[DEBUG] No sort parameters to save: column=#{order_column}, dir=#{order_dir}"
+    end
+    
+    # 軽量なタグ処理モード（大量データ用）
+    lightweight_mode = params["lightweight"] == "true"
+    
+    # キャッシュチェック（軽量データも分けてキャッシュ）
+    cache_key = lightweight_mode ? :lightweight : :full
+    current_time = Time.now
+    if @@api_list_cache && @@api_list_cache[cache_key] && @@api_list_cache_time && 
+       (current_time - @@api_list_cache_time) < @@api_list_cache_duration
+      cached_data = @@api_list_cache[cache_key]
+    else
+      # キャッシュが無い場合は新規作成
+      database_values = Database.instance.get_object.values
+      cached_data = database_values.map do |data|
         id = data["id"]
         is_frozen = Narou.novel_frozen?(id)
-        next nil if !view_frozen && is_frozen
-        next nil if !view_nonfrozen && !is_frozen
         tags = data["tags"] || []
+        
+        # 軽量モードではタグ処理を簡素化（表示のみ）
+        tags_html = if lightweight_mode
+                      if tags.empty?
+                        ""
+                      else
+                        # 軽量表示だが、data-tag属性は保持
+                        visible_tags = tags.first(3)
+                        hidden_count = tags.size > 3 ? tags.size - 3 : 0
+                        
+                        tag_spans = visible_tags.map { |tag| %!<span class="tag-simple" data-tag="#{tag}">#{tag}</span>! }
+                        result = tag_spans.join(", ")
+                        
+                        if hidden_count > 0
+                          result += %! <span class="tag-more">... (+#{hidden_count}個)</span>!
+                        end
+                        
+                        # 隠されたタグもdata-tag属性として保持（検索用）
+                        if tags.size > 3
+                          hidden_tags = tags[3..-1]
+                          hidden_spans = hidden_tags.map { |tag| %!<span class="tag-hidden" data-tag="#{tag}" style="display:none;"></span>! }
+                          result += hidden_spans.join
+                        end
+                        
+                        result + %!&nbsp;<span class="tag tag-reset label label-white" data-tag="" data-toggle="tooltip" title="タグ検索を解除">&nbsp;</span>!
+                      end
+                    else
+                      if tags.empty?
+                        ""
+                      else
+                        %!#{decorate_tags(tags)}&nbsp;<span class="tag tag-reset label label-white"! +
+                        %!data-tag="" data-toggle="tooltip" title="タグ検索を解除">&nbsp;</span>!
+                      end
+                    end
+        
         {
-          id: id.to_s,
+          id: id,
           last_update: data["last_update"].to_i,
-          title: escape_html(data["title"]),
-          author: escape_html(data["author"]),
+          title: h(data["title"]),
+          author: h(data["author"]),
           sitename: data["sitename"],
           toc_url: data["toc_url"],
           novel_type: data["novel_type"] == 2 ? "短編" : "連載",
-          tags: if tags.empty?
-                  ""
-                else
-                  %!#{decorate_tags(tags)}&nbsp;<span class="tag tag-reset label label-white"! +
-                  %!data-tag="" data-toggle="tooltip" title="タグ検索を解除">&nbsp;</span>!
-                end,
+          tags: tags_html,
+          raw_tags: tags,  # 生のタグ配列も追加（JavaScript側での直接アクセス用）
           status: [
             is_frozen ? "凍結" : nil,
             tags.include?("end") ? "完結" : nil,
@@ -506,15 +764,361 @@ class Narou::AppServer < Sinatra::Base
           frozen: is_frozen,
           new_arrivals_date: data["new_arrivals_date"].tap { |m| break m.to_i if m },
           general_lastup: data["general_lastup"].tap { |m| break m.to_i if m },
-          # 掲載話数
           general_all_no: data["general_all_no"],
           last_check_date: data["last_check_date"].tap { |m| break m.to_i if m },
           length: data["length"],
         }
-      end.compact
-    json_objects[:recordsTotal] = json_objects[:data].size
-    json_objects[:recordsFiltered] = json_objects[:recordsTotal]
-    json json_objects
+      end
+
+      # キャッシュを更新
+      @@api_list_cache ||= {}
+      @@api_list_cache[cache_key] = cached_data
+      @@api_list_cache_time = current_time
+    end
+
+    # フィルタリング
+    filtered_data = cached_data.select do |item|
+      (view_frozen || !item[:frozen]) && (view_nonfrozen || item[:frozen])
+    end
+    
+    # フィルタ処理（タグフィルタリング含む）
+    combined_filter = [filter_value, search_value].compact.join(" ").strip
+    
+    if !combined_filter.empty?
+      begin
+        # フィルタ文字列を単語に分割
+        filter_words = combined_filter.split(/\s+/)
+        
+        filtered_data = filtered_data.select do |item|
+          filter_words.all? do |word|
+            if word.match(/^([-^]?)tag:(.+)$/i)
+              # タグフィルタリング（OR検索対応）
+              exclude_flag = $1
+              tag_names_part = $2.downcase
+              
+              # パイプ（|）でOR検索をサポート
+              tag_names = tag_names_part.split('|').map(&:strip)
+              
+              if tag_names.size > 1
+                # OR検索: いずれかのタグにマッチすればOK
+                has_any_tag = tag_names.any? do |tag_name|
+                  item[:raw_tags].any? { |tag| tag.downcase.include?(tag_name) }
+                end
+                
+                case exclude_flag
+                when "-", "^"
+                  !has_any_tag  # いずれのタグも持たない
+                else
+                  has_any_tag   # いずれかのタグを持つ
+                end
+              else
+                # 単一タグの従来処理
+                tag_name = tag_names.first
+                has_tag = item[:raw_tags].any? { |tag| tag.downcase.include?(tag_name) }
+                
+                case exclude_flag
+                when "-", "^"
+                  !has_tag  # 除外
+                else
+                  has_tag   # 包含
+                end
+              end
+            else
+              # 通常の検索フィルタリング
+              search_regex = Regexp.new(Regexp.escape(word), Regexp::IGNORECASE)
+              item[:title].to_s.match?(search_regex) || 
+              item[:author].to_s.match?(search_regex) ||
+              item[:sitename].to_s.match?(search_regex) ||
+              item[:status].to_s.match?(search_regex) ||
+              item[:raw_tags].any? { |tag| tag.match?(search_regex) }
+            end
+          end
+        end
+      rescue StandardError => e
+        # フィルタエラーの場合はフィルタリングをスキップ
+        puts "Filter error: #{e.message}"
+      end
+    end
+    
+    records_total = cached_data.size
+    records_filtered = filtered_data.size
+    
+    # ソート処理
+    if order_column && order_dir
+      column_names = ["id", "last_update", "general_lastup", "last_check_date", "title", "author", "sitename", "novel_type", "tags", "general_all_no", "length", "status", "toc_url"]
+      sort_column = column_names[order_column]
+      if sort_column
+        filtered_data.sort! do |a, b|
+          val_a = a[sort_column.to_sym] || 0
+          val_b = b[sort_column.to_sym] || 0
+          
+          if val_a.is_a?(Numeric) && val_b.is_a?(Numeric)
+            comparison = val_a <=> val_b
+          else
+            comparison = val_a.to_s <=> val_b.to_s
+          end
+          
+          order_dir == "desc" ? -comparison : comparison
+        end
+      end
+    end
+    
+    # ページネーション
+    if length > 0 && length != -1
+      paginated_data = filtered_data[start, length] || []
+    else
+      # "Show All" の場合 (length == -1) は全てのデータを返す
+      # データ量に応じて段階的な制限を適用
+      total_count = filtered_data.size
+      if total_count <= 1000
+        # 1000件以下なら全て表示
+        paginated_data = filtered_data
+      elsif total_count <= 5000
+        # 5000件以下なら軽量モードを強制
+        lightweight_mode = true
+        paginated_data = filtered_data
+      else
+        # 5000件を超える場合は最大件数を制限
+        max_show_all = 5000
+        paginated_data = filtered_data.first(max_show_all)
+        # レスポンスに制限情報を追加
+        return {
+          draw: draw,
+          data: paginated_data,
+          recordsTotal: records_total,
+          recordsFiltered: records_filtered,
+          warning: "表示件数が多いため、最初の#{max_show_all}件のみ表示しています。"
+        }
+      end
+    end
+    
+    {
+      draw: draw,
+      data: paginated_data,
+      recordsTotal: records_total,
+      recordsFiltered: records_filtered
+    }
+  end
+
+  # 処理用の完全ソート済IDリストを取得する
+  def get_full_sorted_ids(params = {})
+    debug_puts "[DEBUG] get_full_sorted_ids called with params: #{params.inspect}"
+    
+    # キャッシュキーの生成（フィルター・ソート条件に基づく）
+    server_setting = Inventory.load("server_setting", :global)
+    current_sort = server_setting["current_sort"] || { "column" => 0, "dir" => "asc" }
+    
+    cache_key = {
+      filter: params["filter"],
+      search: params["search"],
+      view_frozen: params["view_frozen"],
+      view_nonfrozen: params["view_nonfrozen"],
+      sort: current_sort
+    }.to_s.hash
+    
+    current_time = Time.now
+    
+    # キャッシュチェック
+    if @@full_sorted_ids_cache[cache_key] && @@full_ids_cache_time && 
+       (current_time - @@full_ids_cache_time) < @@full_ids_cache_duration
+      debug_puts "[DEBUG] Using cached full sorted IDs: #{@@full_sorted_ids_cache[cache_key].length} items"
+      return @@full_sorted_ids_cache[cache_key]
+    end
+    
+    debug_puts "[DEBUG] Generating new full sorted IDs"
+    
+    # process_novel_list_requestと同じフィルタリング・ソート処理（ページング無し）
+    view_frozen = query_to_boolean(params["view_frozen"], default: true)
+    view_nonfrozen = query_to_boolean(params["view_nonfrozen"], default: true)
+    
+    # 検索パラメータの取得
+    search_value = nil
+    if params["search"] && params["search"].is_a?(Hash)
+      search_value = params["search"]["value"]
+    elsif params["search[value]"]
+      search_value = params["search[value]"]
+    end
+    
+    filter_value = params["filter"]
+    
+    # キャッシュされたデータを使用（軽量モードは使わない）
+    cache_key_api = :full
+    if @@api_list_cache && @@api_list_cache[cache_key_api] && @@api_list_cache_time && 
+       (current_time - @@api_list_cache_time) < @@api_list_cache_duration
+      cached_data = @@api_list_cache[cache_key_api]
+    else
+      # APIキャッシュが無い場合は新規作成
+      database_values = Database.instance.get_object.values
+      cached_data = database_values.map do |data|
+        id = data["id"]
+        is_frozen = Narou.novel_frozen?(id)
+        tags = data["tags"] || []
+        tags_html = if tags.empty?
+                      ""
+                    else
+                      %!#{decorate_tags(tags)}&nbsp;<span class="tag tag-reset label label-white"! +
+                      %!data-tag="" data-toggle="tooltip" title="タグ検索を解除">&nbsp;</span>!
+                    end
+        
+        {
+          id: id,
+          last_update: data["last_update"].to_i,
+          title: h(data["title"]),
+          author: h(data["author"]),
+          sitename: data["sitename"],
+          toc_url: data["toc_url"],
+          novel_type: data["novel_type"] == 2 ? "短編" : "連載",
+          tags: tags_html,
+          raw_tags: tags,
+          status: [
+            is_frozen ? "凍結" : nil,
+            tags.include?("end") ? "完結" : nil,
+            tags.include?("404") ? "削除" : nil,
+            data["suspend"] ? "中断" : nil
+          ].compact.join(", "),
+          download: %!<a href="/novels/#{id}/download" class="btn btn-default btn-xs"><span class="glyphicon glyphicon-download-alt"></span></a>!,
+          frozen: is_frozen,
+          new_arrivals_date: data["new_arrivals_date"].tap { |m| break m.to_i if m },
+          general_lastup: data["general_lastup"].tap { |m| break m.to_i if m },
+          general_all_no: data["general_all_no"],
+          last_check_date: data["last_check_date"].tap { |m| break m.to_i if m },
+          length: data["length"],
+        }
+      end
+      
+      # APIキャッシュも更新
+      @@api_list_cache ||= {}
+      @@api_list_cache[cache_key_api] = cached_data
+      @@api_list_cache_time = current_time
+    end
+    
+    # フィルタリング（process_novel_list_requestと同じ）
+    filtered_data = cached_data.select do |item|
+      (view_frozen || !item[:frozen]) && (view_nonfrozen || item[:frozen])
+    end
+    
+    # フィルタ処理
+    combined_filter = [filter_value, search_value].compact.join(" ").strip
+    
+    if !combined_filter.empty?
+      begin
+        filter_words = combined_filter.split(/\s+/)
+        
+        filtered_data = filtered_data.select do |item|
+          filter_words.all? do |word|
+            if word.match(/^([-^]?)tag:(.+)$/i)
+              exclude_flag = $1
+              tag_names_part = $2.downcase
+              tag_names = tag_names_part.split('|').map(&:strip)
+              
+              if tag_names.size > 1
+                has_any_tag = tag_names.any? do |tag_name|
+                  item[:raw_tags].any? { |tag| tag.downcase.include?(tag_name) }
+                end
+                
+                case exclude_flag
+                when "-", "^"
+                  !has_any_tag
+                else
+                  has_any_tag
+                end
+              else
+                tag_name = tag_names.first
+                has_tag = item[:raw_tags].any? { |tag| tag.downcase.include?(tag_name) }
+                
+                case exclude_flag
+                when "-", "^"
+                  !has_tag
+                else
+                  has_tag
+                end
+              end
+            else
+              search_regex = Regexp.new(Regexp.escape(word), Regexp::IGNORECASE)
+              item[:title].to_s.match?(search_regex) || 
+              item[:author].to_s.match?(search_regex) ||
+              item[:sitename].to_s.match?(search_regex) ||
+              item[:status].to_s.match?(search_regex) ||
+              item[:raw_tags].any? { |tag| tag.match?(search_regex) }
+            end
+          end
+        end
+      rescue StandardError => e
+        puts "Filter error in get_full_sorted_ids: #{e.message}"
+      end
+    end
+    
+    # ソート処理（process_novel_list_requestと同じ）
+    order_column = current_sort["column"]
+    order_dir = current_sort["dir"]
+    
+    if order_column && order_dir
+      column_names = ["id", "last_update", "general_lastup", "last_check_date", "title", "author", "sitename", "novel_type", "tags", "general_all_no", "length", "status", "toc_url"]
+      sort_column = column_names[order_column]
+      if sort_column
+        filtered_data.sort! do |a, b|
+          val_a = a[sort_column.to_sym] || 0
+          val_b = b[sort_column.to_sym] || 0
+          
+          if val_a.is_a?(Numeric) && val_b.is_a?(Numeric)
+            comparison = val_a <=> val_b
+          else
+            comparison = val_a.to_s <=> val_b.to_s
+          end
+          
+          order_dir == "desc" ? -comparison : comparison
+        end
+      end
+    end
+    
+    # IDのみを取得（文字列として）
+    sorted_ids = filtered_data.map { |item| item[:id].to_s }
+    
+    # キャッシュに保存
+    @@full_sorted_ids_cache[cache_key] = sorted_ids
+    @@full_ids_cache_time = current_time
+    
+    debug_puts "[DEBUG] Generated #{sorted_ids.length} sorted IDs: #{sorted_ids.first(5)}..."
+    return sorted_ids
+  end
+
+  get "/api/list" do
+    begin
+      result = process_novel_list_request(params)
+      json result
+    rescue StandardError => e
+      # エラーが発生した場合のレスポンス
+      puts "API List Error: #{e.message}"
+      puts e.backtrace.join("\n")
+      
+      json({
+        draw: params["draw"].to_i || 1,
+        data: [],
+        recordsTotal: 0,
+        recordsFiltered: 0,
+        error: "サーバーエラーが発生しました: #{e.message}"
+      })
+    end
+  end
+
+  # POSTメソッドでも同じ処理を実行（URIが長くなる問題を回避）
+  post "/api/list" do
+    begin
+      result = process_novel_list_request(params)
+      json result
+    rescue StandardError => e
+      # エラーが発生した場合のレスポンス
+      puts "API List Error: #{e.message}"
+      puts e.backtrace.join("\n")
+      
+      json({
+        draw: params["draw"].to_i || 1,
+        data: [],
+        recordsTotal: 0,
+        recordsFiltered: 0,
+        error: "サーバーエラーが発生しました: #{e.message}"
+      })
+    end
   end
 
   post "/api/cancel" do
@@ -522,10 +1126,54 @@ class Narou::AppServer < Sinatra::Base
     Narou::Worker.cancel if Narou.concurrency_enabled?
   end
 
+  get "/api/sort_state" do
+    server_setting = Inventory.load("server_setting", :global)
+    current_sort = server_setting["current_sort"]
+    
+    if current_sort
+      json({
+        column: current_sort["column"],
+        dir: current_sort["dir"]
+      })
+    else
+      # デフォルトソート: 最新話掲載日 降順
+      json({
+        column: 2,
+        dir: "desc"
+      })
+    end
+  end
+
   post "/api/convert" do
-    ids = select_valid_novel_ids(params["ids"]) or pass
-    concurrency_push do
-      CommandLine.run!("convert", "--no-open", ids)
+    begin
+      ids = select_valid_novel_ids(params["ids"]) or halt(400, json({ error: "小説が選択されていません" }))
+      
+      # convert実行時点でのソート状態が渡された場合はそれを使用
+      if params["sort_state"] && params["timestamp"]
+        debug_puts "[DEBUG] Convert with fixed sort state (timestamp: #{params["timestamp"]})"
+        sorted_ids = sort_ids_with_fixed_state(ids, params["sort_state"])
+      else
+        # 従来通りの現在のソート状態に基づく並び替え
+        debug_puts "[DEBUG] Convert with current sort state"
+        sorted_ids = sort_ids_by_current_sort(ids)
+      end
+      
+      debug_puts "[DEBUG] Convert processing #{sorted_ids.length} novels: #{sorted_ids.inspect}"
+      concurrency_push do
+        CommandLine.run!("convert", "--no-open", sorted_ids)
+      end
+      
+      json({ 
+        success: true, 
+        message: "変換処理を開始しました", 
+        count: sorted_ids.length,
+        ids: sorted_ids 
+      })
+    rescue StandardError => e
+      puts "[ERROR] Convert API error: #{e.class}: #{e.message}"
+      puts e.backtrace.first(5).join("\n") if $DEBUG
+      status 500
+      json({ error: "変換処理でエラーが発生しました: #{e.message}" })
     end
   end
 
@@ -537,6 +1185,7 @@ class Narou::AppServer < Sinatra::Base
     pass if targets.size == 0
     Narou::WebWorker.push do
       CommandLine.run!("download", targets, opt_mail)
+      Narou::AppServer.clear_all_cache # 全キャッシュ無効化
       @@push_server.send_all(:"table.reload")
     end
   end
@@ -545,6 +1194,7 @@ class Narou::AppServer < Sinatra::Base
     ids = select_valid_novel_ids(params["ids"]) or pass
     Narou::WebWorker.push do
       CommandLine.run!("download", "--force", ids)
+      Narou::AppServer.clear_all_cache # 全キャッシュ無効化
       @@push_server.send_all(:"table.reload")
     end
   end
@@ -559,21 +1209,70 @@ class Narou::AppServer < Sinatra::Base
   end
 
   post "/api/update" do
-    ids = select_valid_novel_ids(params["ids"]) || []
-    opt_arguments = []
-    if params["force"] == "true"
-      opt_arguments << "--force"
-    end
-    Narou::WebWorker.push do
-      puts "<white>更新を開始します</white>".termcolor
-      cmd = Command::Update.new
-      if table_reload_timing == "every"
-        cmd.on(:success) do
-          @@push_server.send_all(:"table.reload")
-        end
+    if params["update_all"] == "true"
+      # 全件更新の場合 - 処理用完全IDリストを使用
+      puts "[DEBUG] All novels update requested" if ENV["NAROU_DEBUG"] == "1"
+      
+      # 新しいキャッシュシステムで全IDを取得（現在のフィルター・ソート条件適用済み）
+      sorted_ids = get_full_sorted_ids(params)
+      puts "[DEBUG] Full sorted IDs for update: #{sorted_ids.length} items" if ENV["NAROU_DEBUG"] == "1"
+      puts "[DEBUG] First 10 IDs: #{sorted_ids.first(10).inspect}" if ENV["NAROU_DEBUG"] == "1"
+      
+      opt_arguments = []
+      if params["force"] == "true"
+        opt_arguments << "--force"
       end
-      cmd.execute!(ids, opt_arguments)
-      @@push_server.send_all(:"table.reload")
+      Narou::WebWorker.push do
+        puts "<white>全ての小説の更新を開始します（#{sorted_ids.length}件を#{current_sort_display_string}で処理）</white>".termcolor
+        cmd = Command.load_command("update").new
+        if table_reload_timing == "every"
+          cmd.on(:success) do
+            @@push_server.send_all(:"table.reload")
+          end
+        end
+        cmd.execute!(sorted_ids, opt_arguments)
+        Narou::AppServer.clear_all_cache # 全キャッシュ無効化
+        @@push_server.send_all(:"table.reload")
+      end
+    else
+      # 選択された小説のみ更新 - 処理用完全IDリストと照合
+      selected_ids = select_valid_novel_ids(params["ids"]) || []
+      puts "[DEBUG] Selected IDs from WebUI: #{selected_ids.inspect}" if ENV["NAROU_DEBUG"] == "1"
+      
+      if selected_ids.empty?
+        puts "[DEBUG] No valid IDs selected, skipping update" if ENV["NAROU_DEBUG"] == "1"
+        return
+      end
+      
+      # 処理用完全IDリストを取得（現在のフィルター・ソート条件適用済み）
+      full_sorted_ids = get_full_sorted_ids(params)
+      puts "[DEBUG] Full sorted IDs: #{full_sorted_ids.length} items" if ENV["NAROU_DEBUG"] == "1"
+      
+      # 選択されたIDを完全リストの順序で並び替え
+      sorted_ids = full_sorted_ids.select { |id| selected_ids.include?(id) }
+      puts "[DEBUG] Final sorted IDs for update: #{sorted_ids.inspect}" if ENV["NAROU_DEBUG"] == "1"
+      
+      if sorted_ids.empty?
+        puts "[DEBUG] No selected IDs found in current filter/sort, skipping update" if ENV["NAROU_DEBUG"] == "1"
+        return
+      end
+      
+      opt_arguments = []
+      if params["force"] == "true"
+        opt_arguments << "--force"
+      end
+      Narou::WebWorker.push do
+        puts "<white>更新を開始します（#{sorted_ids.length}件を#{current_sort_display_string}で処理）</white>".termcolor
+        cmd = Command.load_command("update").new
+        if table_reload_timing == "every"
+          cmd.on(:success) do
+            @@push_server.send_all(:"table.reload")
+          end
+        end
+        cmd.execute!(sorted_ids, opt_arguments)
+        Narou::AppServer.clear_all_cache # 全キャッシュ無効化
+        @@push_server.send_all(:"table.reload")
+      end
     end
   end
 
@@ -588,13 +1287,14 @@ class Narou::AppServer < Sinatra::Base
     end
     pass if tag_params.empty?
     Narou::WebWorker.push do
-      cmd = Command::Update.new
+      cmd = Command.load_command("update").new
       if table_reload_timing == "every"
         cmd.on(:success) do
           @@push_server.send_all(:"table.reload")
         end
       end
       cmd.execute!(tag_params)
+      Narou::AppServer.clear_all_cache # 全キャッシュ無効化
       @@push_server.send_all(:"table.reload")
     end
   end
@@ -615,46 +1315,115 @@ class Narou::AppServer < Sinatra::Base
   end
 
   post "/api/freeze" do
-    ids = select_valid_novel_ids(params["ids"]) or pass
-    Narou::WebWorker.push do
-      CommandLine.run!("freeze", ids)
-      @@push_server.send_all(:"table.reload")
+    begin
+      ids = select_valid_novel_ids(params["ids"]) or halt(400, json({ error: "小説が選択されていません" }))
+      Narou::WebWorker.push do
+        CommandLine.run!("freeze", ids)
+        Narou::AppServer.clear_all_cache
+        @@push_server.send_all(:"table.reload")
+      end
+      json({ success: true, message: "凍結状態を切り替えました", count: ids.length })
+    rescue StandardError => e
+      puts "[ERROR] Freeze API error: #{e.class}: #{e.message}"
+      status 500
+      json({ error: "凍結処理でエラーが発生しました: #{e.message}" })
     end
   end
 
   post "/api/freeze_on" do
-    ids = select_valid_novel_ids(params["ids"]) or pass
-    Narou::WebWorker.push do
-      CommandLine.run!("freeze", "--on", ids)
-      @@push_server.send_all(:"table.reload")
+    begin
+      ids = select_valid_novel_ids(params["ids"]) or halt(400, json({ error: "小説が選択されていません" }))
+      Narou::WebWorker.push do
+        CommandLine.run!("freeze", "--on", ids)
+        Narou::AppServer.clear_all_cache
+        @@push_server.send_all(:"table.reload")
+      end
+      json({ success: true, message: "凍結しました", count: ids.length })
+    rescue StandardError => e
+      puts "[ERROR] Freeze On API error: #{e.class}: #{e.message}"
+      status 500
+      json({ error: "凍結処理でエラーが発生しました: #{e.message}" })
     end
   end
 
   post "/api/freeze_off" do
-    ids = select_valid_novel_ids(params["ids"]) or pass
-    Narou::WebWorker.push do
-      CommandLine.run!("freeze", "--off", ids)
-      @@push_server.send_all(:"table.reload")
+    begin
+      ids = select_valid_novel_ids(params["ids"]) or halt(400, json({ error: "小説が選択されていません" }))
+      Narou::WebWorker.push do
+        CommandLine.run!("freeze", "--off", ids)
+        Narou::AppServer.clear_all_cache
+        @@push_server.send_all(:"table.reload")
+      end
+      json({ success: true, message: "凍結を解除しました", count: ids.length })
+    rescue StandardError => e
+      puts "[ERROR] Freeze Off API error: #{e.class}: #{e.message}"
+      status 500
+      json({ error: "凍結解除処理でエラーが発生しました: #{e.message}" })
     end
   end
 
   post "/api/remove" do
     ids = select_valid_novel_ids(params["ids"]) or pass
+    
+    # remove実行時点でのソート状態が渡された場合はそれを使用
+    if params["sort_state"] && params["timestamp"]
+      debug_puts "[DEBUG] Remove with fixed sort state (timestamp: #{params["timestamp"]})"
+      sorted_ids = sort_ids_with_fixed_state(ids, params["sort_state"])
+    else
+      # 従来通りの現在のソート状態に基づく並び替え
+      debug_puts "[DEBUG] Remove with current sort state"
+      sorted_ids = sort_ids_by_current_sort(ids)
+    end
+    
     opt_arguments = []
     if params["with_file"] == "true"
       opt_arguments << "--with-file"
     end
-    Narou::WebWorker.push do
-      CommandLine.run!("remove", "--yes", ids, opt_arguments)
-      @@push_server.send_all(:"table.reload")
+    
+    debug_puts "[DEBUG] Remove processing #{sorted_ids.length} novels: #{sorted_ids.inspect}"
+    begin
+      Narou::WebWorker.push do
+        begin
+          CommandLine.run!("remove", "--yes", sorted_ids, opt_arguments)
+          @@push_server.send_all(:"table.reload")
+        rescue => e
+          @@push_server.send_all(:"error", { message: "削除に失敗しました: #{e.message}" })
+        end
+      end
+      { success: true }.to_json
+    rescue => e
+      status 500
+      { error: "削除処理でエラーが発生しました: #{e.message}" }.to_json
     end
   end
 
   post "/api/remove_with_file" do
     ids = select_valid_novel_ids(params["ids"]) or pass
-    Narou::WebWorker.push do
-      CommandLine.run!("remove", "--yes", "--with-file", ids)
-      @@push_server.send_all(:"table.reload")
+    
+    # remove実行時点でのソート状態が渡された場合はそれを使用
+    if params["sort_state"] && params["timestamp"]
+      debug_puts "[DEBUG] Remove with file with fixed sort state (timestamp: #{params["timestamp"]})"
+      sorted_ids = sort_ids_with_fixed_state(ids, params["sort_state"])
+    else
+      # 従来通りの現在のソート状態に基づく並び替え
+      debug_puts "[DEBUG] Remove with file with current sort state"
+      sorted_ids = sort_ids_by_current_sort(ids)
+    end
+    
+    debug_puts "[DEBUG] Remove with file processing #{sorted_ids.length} novels: #{sorted_ids.inspect}"
+    begin
+      Narou::WebWorker.push do
+        begin
+          CommandLine.run!("remove", "--yes", "--with-file", sorted_ids)
+          @@push_server.send_all(:"table.reload")
+        rescue => e
+          @@push_server.send_all(:"error", { message: "削除に失敗しました: #{e.message}" })
+        end
+      end
+      { success: true }.to_json
+    rescue => e
+      status 500
+      { error: "削除処理でエラーが発生しました: #{e.message}" }.to_json
     end
   end
 
@@ -675,7 +1444,7 @@ class Narou::AppServer < Sinatra::Base
   get "/api/diff_list" do
     target = params["target"] or return ""
     id = Downloader.get_id_by_target(target) or return ""
-    @list = Command::Diff.new.get_diff_list(id)
+    @list = Command.load_command("diff").new.get_diff_list(id)
     haml :_diff_list, layout: false
   end
 
@@ -725,11 +1494,11 @@ class Narou::AppServer < Sinatra::Base
     result =
       +'<div><span class="tag tag-reset label label-default" data-tag="">タグ検索を解除</span></div>' \
       '<div class="text-muted" style="font-size:10px">Altキーを押しながらで除外検索</div>'
-    tagname_list = Command::Tag.get_tag_list.keys
+    tagname_list = Command.load_command("tag").get_tag_list.keys
     tagname_list.sort.each do |tagname|
       result << "<div>#{decorate_tags([tagname])} " \
                 "<span class='select-color-button' data-target-tag='#{h tagname}'>" \
-                "<span class='#{Command::Tag.get_color(tagname)}'>a</span></span></div>"
+                "<span class='#{Command.load_command("tag").get_color(tagname)}'>a</span></span></div>"
     end
     result
   end
@@ -737,41 +1506,117 @@ class Narou::AppServer < Sinatra::Base
   post "/api/taginfo.json" do
     ids = select_valid_novel_ids(params["ids"]) or pass
     ids.map!(&:to_i)
+    
+    # tag情報取得時点でのソート状態が渡された場合はそれを使用
+    if params["sort_state"] && params["timestamp"]
+      debug_puts "[DEBUG] TagInfo with fixed sort state (timestamp: #{params["timestamp"]})"
+      # 固定化された状態でデータを取得
+      sorted_ids = sort_ids_with_fixed_state(ids.map(&:to_s), params["sort_state"]).map(&:to_i)
+    else
+      debug_puts "[DEBUG] TagInfo with current state"
+      sorted_ids = ids
+    end
+    
     database = Database.instance
     tag_info = {}
-    database.each_value do |data|
+    
+    # まず全体のタグ一覧を取得（すべてのタグを選択肢として表示するため）
+    all_tags = Command.load_command("tag").get_tag_list
+    all_tags.each do |tag, total_count|
+      tag_info[tag] = {
+        count: 0,
+        total_count: total_count,
+        tag: tag,
+        html: decorate_tags([tag]),
+        exclusion_html: params["with_exclusion"] ? decorate_exclusion_tags([tag]) : ""
+      }
+    end
+    
+    # 選択されたIDの小説での各タグの出現回数を計算
+    sorted_ids.each do |id|
+      data = database[id]
+      next unless data
+      
       tags = data["tags"] || []
       tags.each do |tag|
-        tag_info[tag] ||= {
-          count: 0,
-          tag: tag,
-          html: decorate_tags([tag]),
-          exclusion_html: params["with_exclusion"] ? decorate_exclusion_tags([tag]) : ""
-        }
-        if ids.include?(data["id"])
+        if tag_info[tag]
           tag_info[tag][:count] += 1
         end
       end
     end
+    
+    debug_puts "[DEBUG] TagInfo processing #{sorted_ids.length} novels for #{tag_info.keys.length} tags (#{all_tags.keys.length} total tags available)"
     json Hash[tag_info.sort_by { |k, v| k }].values
   end
 
   post "/api/edit_tag" do
-    ids = select_valid_novel_ids(params["ids"]) or pass
+    # JSONリクエストボディをパース
+    request.body.rewind
+    request_payload = JSON.parse(request.body.read)
+    
+    ids = select_valid_novel_ids(request_payload["ids"]) or pass
+    
+    # tag編集実行時点でのソート状態が渡された場合はそれを使用
+    if request_payload["sort_state"] && request_payload["timestamp"]
+      debug_puts "[DEBUG] Tag edit with fixed sort state (timestamp: #{request_payload["timestamp"]})"
+      sorted_ids = sort_ids_with_fixed_state(ids, request_payload["sort_state"])
+    else
+      debug_puts "[DEBUG] Tag edit with current sort state"
+      sorted_ids = ids
+    end
+    
+    debug_puts "[DEBUG] Tag edit processing #{sorted_ids.length} novels: #{sorted_ids.inspect}"
+    debug_puts "[DEBUG] Received payload: #{request_payload.inspect}"
+    debug_puts "[DEBUG] Received states param: #{request_payload["states"].inspect}"
+    debug_puts "[DEBUG] Received states class: #{request_payload["states"]&.class&.name || 'nil'}"
+    
+    # states パラメータの存在チェック
+    if request_payload["states"].nil? || request_payload["states"].empty?
+      debug_puts "[ERROR] States parameter is nil or empty"
+      return { success: false, error: "No tag states provided" }.to_json
+    end
+    
     # key と value を重複を維持したまま反転
-    invert_states = params["states"].inject({}) { |h,(k,v)| (h[v] ||= []) << k; h }
+    begin
+      invert_states = request_payload["states"].inject({}) { |h,(k,v)| (h[v] ||= []) << k; h }
+      debug_puts "[DEBUG] Inverted states: #{invert_states.inspect}"
+    rescue => e
+      debug_puts "[ERROR] Failed to invert states: #{e.message}"
+      debug_puts "[ERROR] States param details: #{request_payload["states"].inspect}"
+      return { success: false, error: e.message }.to_json
+    end
+    
+    has_additions = false
+    has_deletions = false
+    
     invert_states.each do |state, tags|
       case state.to_i
       when 0
         # タグを削除
-        Command::Tag.execute!("--delete", tags.join(" "), ids, io: Narou::NullIO.new)
+        debug_puts "タグ削除実行: #{tags.join(', ')} (対象ID: #{sorted_ids.join(', ')})"
+        Command.load_command("tag").execute!("--delete", tags.join(" "), sorted_ids, io: Narou::NullIO.new)
+        has_deletions = true
       when 1
         # 現状を維持(何もしない)
       when 2
         # タグを追加
-        Command::Tag.execute!("--add", tags.join(" "), ids, io: Narou::NullIO.new)
+        debug_puts "タグ追加実行: #{tags.join(', ')} (対象ID: #{sorted_ids.join(', ')})"
+        Command.load_command("tag").execute!("--add", tags.join(" "), sorted_ids, io: Narou::NullIO.new)
+        has_additions = true
       end
     end
+    
+    # タグ追加がある場合は、データベース書き込み完了を待つ
+    if has_additions
+      debug_puts "タグ追加処理のためデータベース同期を待機中..."
+      sleep(0.5)  # データベース書き込み完了を待つ
+    end
+    
+    # キャッシュを確実にクリアしてからイベント送信
+    Narou::AppServer.clear_all_cache 
+    debug_puts "タグ編集完了 (追加: #{has_additions}, 削除: #{has_deletions}): 全キャッシュクリア後にリロードイベントを送信"
+    
+    # テーブルリロードとタグキャンバス更新を順次実行
     @@push_server.send_all(:"table.reload")
     @@push_server.send_all(:"tag.updateCanvas")
   end
@@ -789,11 +1634,13 @@ class Narou::AppServer < Sinatra::Base
     is_update_modified = params["is_update_modified"] == "true"
     Narou::WebWorker.push do
       CommandLine.run!(["update", "--gl", option].compact)
+      Narou::AppServer.clear_all_cache # 全キャッシュ無効化
       @@push_server.send_all(:"table.reload")
       @@push_server.send_all(:"tag.updateCanvas")
       if is_update_modified
         puts "<yellow>#{Narou::MODIFIED_TAG} タグの付いた小説を更新します</yellow>".termcolor
         CommandLine.run!("update", "tag:#{Narou::MODIFIED_TAG}")
+        Narou::AppServer.clear_all_cache # 全キャッシュ無効化
         @@push_server.send_all(:"table.reload")
         @@push_server.send_all(:"tag.updateCanvas")
       end
@@ -813,24 +1660,49 @@ class Narou::AppServer < Sinatra::Base
     tag_colors = Inventory.load("tag_colors")
     tag_colors[tag] = color
     tag_colors.save
+    
+    # キャッシュを確実にクリアしてからイベント送信
+    Narou::AppServer.clear_all_cache 
+    puts "タグ色変更完了: 全キャッシュクリア後にリロードイベントを送信"
+    
+    # テーブルリロードとタグキャンバス更新を順次実行
     @@push_server.send_all(:"table.reload")
     @@push_server.send_all(:"tag.updateCanvas")
   end
 
   get "/api/csv/download" do
-    content_type "application/csv"
-    attachment "novels.csv"
+    begin
+      content_type "application/csv"
+      attachment "novels.csv"
 
-    Command::Csv.new.generate
+      csv_command = Command.load_command("csv").new
+      result = csv_command.generate
+      puts "CSVファイルをエクスポートしました (#{result.bytesize} bytes)"
+      result
+    rescue StandardError => e
+      puts "[ERROR] CSVエクスポートに失敗しました: #{e.message}"
+      status 500
+      content_type "text/plain"
+      "CSVエクスポートエラー: #{e.message}"
+    end
   end
 
   post "/api/csv/import" do
-    files = params["files"] or pass
-    csv = Command::Csv.new
-    files.each do |file|
-      csv.import(file[:tempfile])
+    begin
+      files = params["files"] or pass
+      csv = Command.load_command("csv").new
+      imported_count = 0
+      files.each do |file|
+        csv.import(file[:tempfile])
+        imported_count += 1
+      end
+      puts "CSVファイルをインポートしました (#{imported_count}件)"
+      ""
+    rescue StandardError => e
+      puts "[ERROR] CSVインポートに失敗しました: #{e.message}"
+      status 500
+      "CSVインポートエラー: #{e.message}"
     end
-    ""
   end
 
   # ダウンロード登録すると同時にグレーのボタン画像を返す
@@ -842,6 +1714,25 @@ class Narou::AppServer < Sinatra::Base
       @@push_server.send_all(:"table.reload")
     end
     redirect "/resources/images/dl_button1.gif"
+  end
+
+  # 外部APIからのダウンロード登録（JSON形式でレスポンス）
+  get "/api/download_request" do
+    target = params["target"] or error("need a parameter: `target'")
+    opt_mail = "--mail" if query_to_boolean(params["mail"])
+    
+    already_exists = Downloader.get_id_by_target(target)
+    
+    content_type :json
+    if already_exists
+      { status: 1, id: already_exists }.to_json
+    else
+      Narou::WebWorker.push do
+        CommandLine.run!("download", target, opt_mail)
+        @@push_server.send_all(:"table.reload")
+      end
+      { status: 0, id: nil }.to_json
+    end
   end
 
   # ダウンロード済みかどうかで表示が変わる画像
@@ -974,4 +1865,12 @@ class Narou::AppServer < Sinatra::Base
   get "/widget/notepad" do
     haml :"widget/notepad", layout: nil
   end
+
+  private
+
+  def debug_puts(message)
+    puts message if ENV["NAROU_DEBUG"] == "1"
+  end
 end
+
+

@@ -14,6 +14,7 @@ require_relative "../eventable"
 require_relative "update/interval"
 require_relative "update/general_lastup_updater"
 require_relative "update/hotentry_manager"
+require_relative "update/scheduler"
 
 module Command
   class Update < CommandBase
@@ -41,18 +42,18 @@ module Command
   ・全て更新する場合、convert.no-openが設定されていなくても保存フォルダは開きません。
 
   Examples:
-    narouq update               # 全て更新
-    narouq u                    # 短縮コマンド
-    narouq update 0 1 2 4
-    narouq update n9669bk 異世界迷宮で奴隷ハーレムを
-    narouq update http://ncode.syosetu.com/n9669bk/
+    narou update               # 全て更新
+    narou u                    # 短縮コマンド
+    narou update 0 1 2 4
+    narou update n9669bk 異世界迷宮で奴隷ハーレムを
+    narou update http://ncode.syosetu.com/n9669bk/
 
     # foo タグが付いた小説と bar タグが付いた小説を更新(タグのOR指定)
-    narouq u foo bar
+    narou u foo bar
 
     # foo タグ及び bar タグが両方付いた小説のみ更新(タグのAND指定)
-    narouq tag foo bar | narouq u
-    narouq l -t "foo bar" | narouq u   # こっちでも同じ(覚えやすい方を使う)
+    narou tag foo bar | narou u
+    narou l -t "foo bar" | narou u   # こっちでも同じ(覚えやすい方を使う)
 
   Options:
       EOS
@@ -70,7 +71,7 @@ module Command
                             |   other  | なろうAPIが使えない小説のみ対象
         EOS
         if option && !["narou", "other"].include?(option)
-          error "--gl で指定可能なオプションではありません。詳細は narouq u -h を参照"
+          error "--gl で指定可能なオプションではありません。詳細は narou u -h を参照"
           exit Narou::EXIT_ERROR_CODE
         end
         update_general_lastup(option)
@@ -209,7 +210,19 @@ module Command
           end
           convert_argv = [target]
           convert_argv << "--no-open" if @options["no-open"]
+          
+          # WebUI: 変換メッセージを変換コンソールに出力するため、一時的に$stdout2を切り替え
+          original_stdout2 = $stdout2
+          if $stdout2.respond_to?(:push_server) && $stdout2.respond_to?(:target_console)
+            # WebUIの場合、変換用の別コンソールに出力
+            $stdout2 = Narou::StreamingLogger.new($stdout2.push_server, $stdout2, target_console: "convert")
+          end
+          
           convert_status = Convert.execute!(convert_argv)
+          
+          # $stdout2を元に戻す
+          $stdout2 = original_stdout2 if original_stdout2
+          
           if convert_status > 0
             # 変換が失敗したか、中断された
             data["_convert_failure"] = true

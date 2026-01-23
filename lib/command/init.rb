@@ -4,8 +4,10 @@
 # Copyright 2013 whiteleaf. All rights reserved.
 #
 
+require_relative "../aozoraepub3"
 require_relative "../inventory"
 require_relative "../commandbase"
+require_relative "../tty_helper"
 
 module Command
   class Init < CommandBase
@@ -48,12 +50,12 @@ module Command
 
 #{description}
   Examples:
-    narouq init
-    narouq init -p /opt/narou/aozora    # AozoraEpub3 のフォルダを直接指定
-    narouq init -p :keep                # 設定済みと同じ場所を指定(既に初期化済の場合)
+    narou init
+    narou init -p /opt/narou/aozora    # AozoraEpub3 のフォルダを直接指定
+    narou init -p :keep                # 設定済みと同じ場所を指定(既に初期化済の場合)
 
     # 行の高さの調整
-    narouq init --line-height 1.8       # 行の高さを1.8emに設定(1.8文字分相当)
+    narou init --line-height 1.8       # 行の高さを1.8emに設定(1.8文字分相当)
     # 行の高さなので、行間を1文字分あけたいという場合は 1+1 で 2 を指定する
     # (未設定のまま小説変換すると 1.6 で計算される)
     # 参考情報：Kindle Voyage で文字サイズ４番目の大きさの場合、
@@ -62,7 +64,7 @@ module Command
     # の表示行数になる
 
     # 入力を省略したい場合、-p と -l を両方指定してやる必要あり
-    narouq init -p /path/to/aozora -l 1.8
+    narou init -p /path/to/aozora -l 1.8
 
   Options:
       MSG
@@ -78,7 +80,7 @@ module Command
         init_aozoraepub3
         puts "初期化が完了しました！"
         puts "現在のフォルダ下で各種コマンドが使用出来るようになりました。"
-        puts "まずは narouq help で簡単な説明を御覧ください。"
+        puts "まずは narou help で簡単な説明を御覧ください。"
       end
     end
 
@@ -92,53 +94,53 @@ module Command
         puts "<bold><red>#{"!!!WARNING!!!".center(70)}</red></bold>".termcolor
         puts "AozoraEpub3の構成ファイルを書き換えます。narouコマンド用に別途新規インストールしておくことをオススメします"
       end
+
+      path = nil
       if @options["aozora_dirname"]
         path = normalize_aozoraepub3_path(@options["aozora_dirname"])
         print "\n<bold><green>指定されたフォルダにAozoraEpub3がありません。</green></bold>\n".termcolor unless path
       end
-      aozora_path = path || ask_aozoraepub3_path
+
+      # 非対話（CI/rspec 等）では入力待ちしない：既存設定があれば採用、なければスキップ
+      aozora_path =
+        if path
+          path
+        elsif TTYHelper.non_interactive?
+          @global_setting["aozoraepub3dir"]
+        else
+          ask_aozoraepub3_path
+        end
+
       unless aozora_path
-        puts "設定をスキップしました。あとで " + "<bold><yellow>narouq init</yellow></bold>".termcolor + " で再度設定出来ます"
+        puts "設定をスキップしました。あとで " + "<bold><yellow>narou init</yellow></bold>".termcolor + " で再度設定出来ます"
         return
       end
-      line_height = @options["line_height"] || ask_line_height
+
+      line_height =
+        @options["line_height"] || (TTYHelper.non_interactive? ? Narou.line_height(default: 1.8) : ask_line_height)
+
       puts
-      rewrite_aozoraepub3_files(aozora_path, line_height)
       @global_setting["aozoraepub3dir"] = aozora_path
       @global_setting["line-height"] = line_height
+      AozoraEpub3.setup(@global_setting) { |copied_file_paths, updated_file_paths|
+        puts "(次のファイルを書き換えました)"
+        updated_file_paths.each do |path|
+          puts path
+        end
+        puts
+
+        puts "(次のファイルをコピーor上書きしました)"
+        copied_file_paths.each do |path|
+          puts path
+        end
+      }
       @global_setting.save
       puts "<bold><green>AozoraEpub3の設定を終了しました</green></bold>".termcolor
     end
 
-    def rewrite_aozoraepub3_files(aozora_path, line_height)
-      # chuki_tag.txt の書き換え
-      custom_chuki_tag_path = File.join(Narou.preset_dir, "custom_chuki_tag.txt")
-      chuki_tag_path = File.join(aozora_path, "chuki_tag.txt")
-      custom_chuki_tag = File.read(custom_chuki_tag_path, mode: "r:BOM|UTF-8")
-      chuki_tag = File.read(chuki_tag_path, mode: "r:BOM|UTF-8")
-      embedded_mark = "### Narou.rb embedded custom chuki ###"
-      if chuki_tag =~ /#{embedded_mark}/
-        chuki_tag.gsub!(/#{embedded_mark}.+#{embedded_mark}/m, custom_chuki_tag)
-      else
-        chuki_tag << "\n" + custom_chuki_tag
-      end
-      File.write(chuki_tag_path, chuki_tag)
-      puts "(次のファイルを書き換えました)"
-      puts chuki_tag_path
-      puts
-      # ファイルコピー
-      src = ["AozoraEpub3.ini", "vertical_font.css"]
-      dst = ["AozoraEpub3.ini", "template/OPS/css_custom/vertical_font.css"]
-      puts "(次のファイルをコピーor上書きしました)"
-      src.size.times do |i|
-        src_full_path = File.join(Narou.preset_dir, src[i])
-        dst_full_path = File.join(aozora_path, dst[i])
-        Helper.erb_copy(src_full_path, dst_full_path, binding)
-        puts dst_full_path
-      end
-    end
-
     def ask_aozoraepub3_path
+      # 非対話環境では入力を読まない
+      return nil if TTYHelper.non_interactive?
       puts
       print "<bold><green>AozoraEpub3のあるフォルダを入力して下さい:</green></bold>\n(未入力でスキップ".termcolor
       if @global_setting["aozoraepub3dir"]
@@ -157,6 +159,8 @@ module Command
     end
 
     def ask_line_height
+      # 非対話環境ではデフォルトを返す（安全側）
+      return Narou.line_height(default: 1.8) if TTYHelper.non_interactive?
       # 後方互換のために未設定時の line_height デフォルトは 1.6 だが、
       # オススメは 1.8 なので入力時のデフォルトは 1.8 にする
       line_height = Narou.line_height(default: 1.8)

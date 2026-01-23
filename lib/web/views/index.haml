@@ -1,3 +1,6 @@
+:ruby
+  bootsnap_on = !!$bootsnap_enable
+
 %nav#header-navbar.navbar.navbar-default.navbar-fixed-top(role="navigation")
   .container
     .navbar-header
@@ -6,7 +9,17 @@
         %span.icon-bar
         %span.icon-bar
         %span.icon-bar
-      %a.navbar-brand(href="#" data-move-to="top") Narou.rb WEB UI
+      %a.navbar-brand(href="#" data-move-to="top")
+        Narou.rb M
+        %span#bootsnap-indicator.zap{
+          class: (bootsnap_on ? 'on glow' : 'off'),
+          title: (bootsnap_on ? 'Bootsnap!' : 'Normal'),
+          'data-toggle' => 'tooltip',
+          'data-placement' => 'bottom',
+          role: 'img',
+          'aria-label' => (bootsnap_on ? 'Bootsnap enabled' : 'Bootsnap disabled')
+        } ⚡︎
+        D WEB UI
     .navbar-collapse.collapse
       %ul.nav.navbar-nav
         %li.dropdown
@@ -185,7 +198,7 @@
         .form-group
           .input-group
             %span#myFilter-search-icon.glyphicon.glyphicon-search
-            %input#myFilter.form-control(placeholder="Filter" type="text")/
+            %input#myFilter.form-control(placeholder="Filter" type="text" autocomplete="off")/
             %span#myFilter-clear.glyphicon.glyphicon-remove-circle
 
 %nav#footer-navbar.navbar.navbar-default.navbar-fixed-bottom.hide
@@ -321,6 +334,13 @@
 .container.container-main.theme-showcase#novel-list-container(role="main")
   -# 小説の一覧テーブル
   %div
+    %input#total-novels-count(type="hidden" value="0")
+    #performance-info.alert.alert-info.hide(style="margin-bottom: 10px;")
+      %strong パフォーマンスモード:
+      大量のデータが検出されたため、軽量表示モードで動作しています。タグ表示が簡素化されています。
+    #show-all-warning.alert.alert-warning.hide(style="margin-bottom: 10px;")
+      %strong 注意:
+      「全」表示モードが選択されています。大量のデータを表示中のため、ブラウザの動作が重くなる可能性があります。
     %table#novel-list.dataTable.table.table-bordered(cellspacing="0" width="100%")
       %thead
 

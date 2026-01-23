@@ -1,0 +1,20 @@
+version: '3'
+
+services:
+  narou:
+    build: .
+    restart: unless-stopped
+    # ホストからは直接アクセスしないためポート公開不要
+    ports:
+       - "33000:33000"
+       - "33001:33001"
+    volumes:
+      - ./apps/novels:/app/小説データ
+      - ./apps/aozoraepub3_data:/app/aozoraepub3
+      - ./apps/narou_setting:/root/.narousetting
+      - ./apps/narou:/app/.narou/
+    networks:
+      - narou-net
+
+networks:
+  narou-net:

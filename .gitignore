@@ -58,4 +58,6 @@ test/tmp
 test/version_tmp
 tmp
 document
-Gemfile.lock
+
+apps/
+.serena

@@ -32,35 +32,35 @@ module Command
   ・現在管理している小説の一覧を表示します
   ・表示されるIDは各コマンドで指定することで小説名等を入力する手間を省けます
   ・個数を与えることで、最大表示数を制限できます(デフォルトは全て表示)
-  ・narouq listのデフォルト動作を narouq s default_arg.list= で設定すると便利です
-  ・パイプで他の narouq コマンドに繋ぐとID入力の代わりにできます
+  ・narou listのデフォルト動作を narou s default_arg.list= で設定すると便利です
+  ・パイプで他のnarouコマンドに繋ぐとID入力の代わりにできます
 
   Examples:
-    narouq list             # IDの小さい順に全て表示
-    narouq list 10 -r       # IDの大きい順に10件表示
-    narouq list 5 -l        # 最近更新のあった5件表示
-    narouq list 10 -rl      # 古い順に10件表示
-    narouq list -f ss       # 短編小説だけ表示
-    narouq list -f "ss frozen"   # 凍結している短編だけ表示
+    narou list             # IDの小さい順に全て表示
+    narou list 10 -r       # IDの大きい順に10件表示
+    narou list 5 -l        # 最近更新のあった5件表示
+    narou list 10 -rl      # 古い順に10件表示
+    narou list -f ss       # 短編小説だけ表示
+    narou list -f "ss frozen"   # 凍結している短編だけ表示
 
     # 小説家になろうの小説のみを表示
-    narouq list --site --grep 小説家になろう
-    narouq l -sg 小説家になろう    # 上記と同じ意味
+    narou list --site --grep 小説家になろう
+    narou l -sg 小説家になろう    # 上記と同じ意味
     # 作者“紫炎”を含む小説を表示
-    narouq list --author --grep 紫炎
-    narouq l -ag 紫炎              # 上記と同じ意味
+    narou list --author --grep 紫炎
+    narou l -ag 紫炎              # 上記と同じ意味
     # “紫炎”と“なろう”を含む小説を表示(AND検索)
-    narouq l -asg "紫炎 なろう"
+    narou l -asg "紫炎 なろう"
     # “なろう”を含まない小説を表示(NOT検索)
-    narouq l -sg "-なろう"
+    narou l -sg "-なろう"
 
     # ハーメルンを含む小説にhamelnタグを付ける
-    narouq l -sg ハーメルン | narouq t -a hameln
+    narou l -sg ハーメルン | narou t -a hameln
     # 短編を全て凍結する
-    narouq l -f ss | narouq freeze --on
+    narou l -f ss | narou freeze --on
 
     # リストをそのまま保存したい時(echoオプション)
-    narouq l -e > list.txt
+    narou l -e > list.txt
 
   Options:
       EOS
